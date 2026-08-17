@@ -183,7 +183,20 @@ export default function (pi: ExtensionAPI): void {
         ctx.ui.notify('pi-trace server failed to start', 'error');
         return;
       }
-      if (collector !== null) started.register(collector);
+      if (collector !== null) {
+        started.register(collector);
+      } else {
+        // 兜底：session_start 未就绪或重载后未重放，现场建 collector。
+        try {
+          const sid = ctx.sessionManager.getSessionId();
+          const sfile = ctx.sessionManager.getSessionFile() ?? '';
+          const session = loadSession(sid, sfile || undefined)
+            ?? emptySession(sid, sfile, ctx.cwd, Date.now());
+          collector = new Collector(session);
+          collector.regroup();
+          started.register(collector);
+        } catch { /* 下面 resolveSession 会走 sidecar 回退 */ }
+      }
       const port = started.getPort();
       if (port === 0) {
         try {

@@ -169,8 +169,18 @@ function recomputeFocus() {
 
 // --- 数据通道 ---------------------------------------------------------------
 
-async function loadSession(id) {
-  const res = await fetch(`/api/session/${encodeURIComponent(id)}`);
+async function loadSession(id, retries = 5) {
+  let res;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    res = await fetch(`/api/session/${encodeURIComponent(id)}`);
+    if (res.ok) break;
+    if (res.status === 404 && attempt < retries) {
+      // server 可能刚拉起、collector 还没注册上，退避重试
+      await new Promise(r => setTimeout(r, 300 * (attempt + 1)));
+      continue;
+    }
+    break;
+  }
   if (!res.ok) {
     document.getElementById('ledger').textContent = `failed to load session: ${res.status}`;
     return;
