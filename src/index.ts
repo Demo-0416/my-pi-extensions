@@ -20,6 +20,7 @@ import { TraceServer } from './server.ts';
 let server: TraceServer | null = null;
 let collector: Collector | null = null;
 let currentSessionId: string | null = null;
+let widgetEnabled = true;
 
 async function ensureServer(): Promise<TraceServer | null> {
   if (server === null) {
@@ -35,9 +36,13 @@ async function ensureServer(): Promise<TraceServer | null> {
   return server;
 }
 
-/** 刷新 TUI widget 统计行（DESIGN.md 3.10）。 */
+/** 刷新 TUI widget 统计行（DESIGN.md 3.10）。无数据时不显示，避免空态噪音。 */
 function refreshWidget(ctx: ExtensionContext): void {
-  if (!ctx.hasUI || collector === null) return;
+  if (!ctx.hasUI) return;
+  if (!widgetEnabled || collector === null || collector.session.records.length === 0) {
+    ctx.ui.setWidget('pi-trace', undefined);
+    return;
+  }
   const stats = computeStats(collector.session);
   ctx.ui.setWidget(
     'pi-trace',
@@ -54,7 +59,7 @@ function refreshWidget(ctx: ExtensionContext): void {
         .filter((part): part is string => part !== null)
         .join(theme.fg('dim', ' · ')),
     ),
-    { placement: 'aboveEditor' },
+    { placement: 'belowEditor' },
   );
 }
 
@@ -202,6 +207,20 @@ export default function (pi: ExtensionAPI): void {
       const url = `http://127.0.0.1:${port}/?session=${encodeURIComponent(sessionId)}`;
       await openInBrowser(pi, url);
       ctx.ui.notify(`pi-trace: ${url}`, 'info');
+    },
+  });
+
+  pi.registerCommand('trace-widget', {
+    description: 'Toggle pi-trace TUI widget',
+    handler: async (_args, ctx) => {
+      widgetEnabled = !widgetEnabled;
+      if (!widgetEnabled) {
+        ctx.ui.setWidget('pi-trace', undefined);
+        ctx.ui.notify('pi-trace widget hidden', 'info');
+      } else {
+        refreshWidget(ctx);
+        ctx.ui.notify('pi-trace widget shown', 'info');
+      }
     },
   });
 }
