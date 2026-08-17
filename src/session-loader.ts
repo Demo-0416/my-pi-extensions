@@ -269,8 +269,9 @@ export function sessionFromSidecar(
 export function loadSession(sessionId: string, sessionFile?: string): TraceSession | null {
   const rich = sessionFromSidecar(sessionId, sessionFile);
   if (rich !== null && rich.records.length > 0) return rich;
-  if (sessionFile) {
-    const reconstructed = reconstructFromSessionFile(sessionFile, sessionId);
+  const file = sessionFile ?? findSessionFileById(sessionId);
+  if (file) {
+    const reconstructed = reconstructFromSessionFile(file, sessionId);
     if (reconstructed !== null) return reconstructed;
   }
   return rich;
@@ -295,6 +296,24 @@ function listSessionFiles(dir: string): string[] {
     }
   }
   return out;
+}
+
+/** id → session 文件路径缓存（mtime 失效）。 */
+let sessionFileIndex: { builtAt: number; byId: Map<string, string> } | null = null;
+const INDEX_TTL_MS = 10_000;
+
+/** 按 session id 查 session 文件路径（扫 sessions 目录，10s 缓存）。 */
+export function findSessionFileById(sessionId: string): string | null {
+  const now = Date.now();
+  if (sessionFileIndex === null || now - sessionFileIndex.builtAt > INDEX_TTL_MS) {
+    const byId = new Map<string, string>();
+    for (const file of listSessionFiles(SESSIONS_DIR)) {
+      const header = readHeader(file);
+      if (header !== null) byId.set(header.id, file);
+    }
+    sessionFileIndex = { builtAt: now, byId };
+  }
+  return sessionFileIndex.byId.get(sessionId) ?? null;
 }
 
 /** 读 session 文件头（第一行）。 */

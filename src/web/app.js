@@ -1,12 +1,18 @@
 /**
- * pi-trace 前端主控制器（M8 最小版：统计栏 + 按 Turn 分组流水账）。
- *
- * M9 将加入 timeline.js（4 泳道甘特）与 ledger.js（虚拟滚动 + 搜索）。
+ * pi-trace 前端主控制器。
  *
  * 数据通道：
  *   GET /api/session/{id}     全量快照
  *   GET /api/events?session=  SSE：hello → record/turn/stats 增量
+ *
+ * 视图：
+ *   - 统计栏（DESIGN 3.6，与 src/stats.ts 同口径）
+ *   - 4 泳道甘特图（timeline.js，DESIGN 3.4）
+ *   - 按 Turn 分组流水账（ledger.js，DESIGN 3.5）
+ *   - 详情抽屉（tool args/result、assistant 正文+usage+timing）
  */
+import { Timeline, focusIds } from './timeline.js';
+import { Ledger, SearchIndex, KIND_BADGE } from './ledger.js';
 import {
   formatClock,
   formatCost,
@@ -16,19 +22,21 @@ import {
   formatTokens,
 } from './format.js';
 
-const KIND_BADGE = {
-  system: 'SYSTEM',
-  user: 'USER',
-  assistant: 'ASSISTANT',
-  tool: 'TOOL',
-  compaction: 'COMPACTION',
-};
-
 const state = {
   session: null,
+  mode: 'duration',
+  range: null,       // 甘特框选（投影域内）
+  searchQuery: '',
+  searchIds: null,
+  focusIds: null,
   selectedId: null,
+  collapsedTurns: new Set(),
   eventSource: null,
 };
+
+let timeline = null;
+let ledger = null;
+let searchIndex = null;
 
 // --- 统计（DESIGN.md 3.6，与 src/stats.ts 同口径） ------------------------
 
@@ -98,85 +106,20 @@ function renderStats(session) {
   el.textContent = parts.join(' · ');
 }
 
-function recordSummary(record) {
-  if (record.kind === 'assistant') {
-    const bits = [];
-    if (record.model) bits.push(record.model);
-    if (record.ttftMs !== null && record.ttftMs !== undefined) {
-      const s = computeStats(state.session);
-      if (s.tokPerSec !== null) bits.push(`${s.tokPerSec.toFixed(1)} tok/s`);
-      bits.push(`TTFT ${formatElapsed(record.ttftMs)}`);
-    }
-    return bits.join(' · ');
-  }
-  return record.text;
-}
-
-function renderLedger(session) {
-  const el = document.getElementById('ledger');
-  el.innerHTML = '';
-  const turns = [...session.turns].sort((a, b) => a.turn - b.turn);
-  const orphans = session.records.filter(r => r.turn === null);
-  for (const turn of turns) {
-    const header = document.createElement('div');
-    header.className = 'turn-header';
-    header.textContent = `Turn ${turn.turn + 1}`;
-    el.appendChild(header);
-    for (const record of turn.records) {
-      el.appendChild(rowFor(record));
-    }
-  }
-  if (orphans.length > 0) {
-    const header = document.createElement('div');
-    header.className = 'turn-header';
-    header.textContent = '—';
-    el.appendChild(header);
-    for (const record of orphans) el.appendChild(rowFor(record));
-  }
-}
-
-function rowFor(record) {
-  const row = document.createElement('div');
-  row.className = `record record-${record.kind}${record.isError ? ' record-error' : ''}`;
-  if (record.id === state.selectedId) row.classList.add('selected');
-
-  const badge = document.createElement('span');
-  badge.className = `badge badge-${record.kind}`;
-  badge.textContent = KIND_BADGE[record.kind] ?? record.kind;
-  row.appendChild(badge);
-
-  const summary = document.createElement('span');
-  summary.className = 'summary';
-  summary.textContent = recordSummary(record);
-  row.appendChild(summary);
-
-  const meta = document.createElement('span');
-  meta.className = 'meta';
-  const time = formatClock(record.startedAt);
-  const duration = record.durationMs !== null ? ` · ${formatElapsed(record.durationMs)}` : '';
-  const exit = record.kind === 'tool' && record.exitCode !== undefined ? `  [${record.exitCode}]` : '';
-  meta.textContent = `${time}${duration}${exit}`;
-  row.appendChild(meta);
-
-  row.addEventListener('click', () => {
-    state.selectedId = record.id;
-    renderDetail(record);
-    renderLedger(state.session);
-  });
-  return row;
-}
-
 function renderDetail(record) {
   const el = document.getElementById('detail');
   if (!record) {
+    el.hidden = true;
     el.innerHTML = '';
     return;
   }
+  el.hidden = false;
   const sections = [];
   sections.push(`<div class="detail-title">${KIND_BADGE[record.kind] ?? record.kind} · ${formatDurationMillis(record.durationMs)}</div>`);
   if (record.kind === 'tool') {
     sections.push(`<div class="detail-label">args</div><pre>${escapeHtml(JSON.stringify(record.args, null, 2))}</pre>`);
     sections.push(`<div class="detail-label">result</div><pre>${escapeHtml(typeof record.result === 'string' ? record.result : JSON.stringify(record.result, null, 2))}</pre>`);
+    if (record.exitCode !== undefined) sections.push(`<div class="detail-label">exit code</div><pre>${record.exitCode}</pre>`);
   } else if (record.kind === 'assistant') {
     sections.push(`<div class="detail-label">text</div><pre>${escapeHtml(record.text)}</pre>`);
     if (record.usage) {
@@ -189,13 +132,6 @@ function renderDetail(record) {
   el.innerHTML = sections.join('\n');
 }
 
-function escapeHtml(text) {
-  return String(text ?? '')
-    .replaceAll('&', '&amp;')
-    .replaceAll('<', '&lt;')
-    .replaceAll('>', '&gt;');
-}
-
 function renderAll() {
   const session = state.session;
   if (!session) return;
@@ -203,7 +139,22 @@ function renderAll() {
   document.getElementById('precision').className = `precision precision-${session.precision}`;
   document.getElementById('session-title').textContent = `${session.cwd || '—'} · ${session.sessionId.slice(0, 8)}`;
   renderStats(session);
-  renderLedger(session);
+  timeline.update(session, {
+    mode: state.mode,
+    range: state.range,
+    selectedId: state.selectedId,
+    dimIds: state.searchIds,
+  });
+  ledger.update(session, {
+    searchIds: state.searchIds,
+    focusIds: state.focusIds,
+    collapsedTurns: state.collapsedTurns,
+    selectedId: state.selectedId,
+  });
+}
+
+function recomputeFocus() {
+  state.focusIds = focusIds(state.session, state.range, state.mode);
 }
 
 // --- 数据通道 ---------------------------------------------------------------
@@ -216,6 +167,10 @@ async function loadSession(id) {
   }
   state.session = await res.json();
   state.selectedId = null;
+  state.range = null;
+  state.focusIds = null;
+  state.collapsedTurns = new Set();
+  searchIndex = new SearchIndex(state.session);
   renderDetail(null);
   renderAll();
   subscribe(id);
@@ -229,12 +184,18 @@ function subscribe(id) {
     const data = JSON.parse(e.data);
     if (data.session) {
       state.session = data.session;
+      searchIndex = new SearchIndex(state.session);
+      state.searchIds = searchIndex.search(state.searchQuery);
+      recomputeFocus();
       renderAll();
     }
   });
   es.addEventListener('record', (e) => {
     const { record } = JSON.parse(e.data);
     upsertRecord(record);
+    searchIndex?.update(state.session);
+    state.searchIds = searchIndex.search(state.searchQuery);
+    recomputeFocus();
     renderAll();
   });
   es.addEventListener('turn', (e) => {
@@ -267,7 +228,11 @@ function upsertRecord(record) {
     const bIndex = bucket.records.findIndex(r => r.id === record.id);
     if (bIndex >= 0) bucket.records[bIndex] = record;
     else bucket.records.push(record);
+    bucket.startedAt = Math.min(bucket.startedAt, record.startedAt);
+    const end = record.startedAt + (record.durationMs ?? 0);
+    bucket.endedAt = bucket.endedAt === null ? end : Math.max(bucket.endedAt, end);
   }
+  session.endedAt = record.startedAt + (record.durationMs ?? 0);
 }
 
 // --- 会话选择 ---------------------------------------------------------------
@@ -295,10 +260,72 @@ async function loadSessionList() {
   }
 }
 
+// --- 初始化 -----------------------------------------------------------------
+
+function escapeHtml(text) {
+  return String(text ?? '')
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;');
+}
+
 document.getElementById('session-picker').addEventListener('change', async (e) => {
   const id = e.target.value;
   history.replaceState(null, '', `?session=${encodeURIComponent(id)}`);
   await loadSession(id);
 });
+
+document.getElementById('search').addEventListener('input', (e) => {
+  state.searchQuery = e.target.value;
+  state.searchIds = searchIndex?.search(state.searchQuery) ?? null;
+  renderAll();
+});
+
+document.getElementById('mode-duration').addEventListener('click', () => {
+  state.mode = 'duration';
+  state.range = null;
+  recomputeFocus();
+  document.querySelectorAll('.mode-btn').forEach(b => b.classList.toggle('active', b.id === 'mode-duration'));
+  renderAll();
+});
+
+document.getElementById('mode-time').addEventListener('click', () => {
+  state.mode = 'time';
+  state.range = null;
+  recomputeFocus();
+  document.querySelectorAll('.mode-btn').forEach(b => b.classList.toggle('active', b.id === 'mode-time'));
+  renderAll();
+});
+
+timeline = new Timeline(document.getElementById('timeline'), {
+  onRangeChange: (range) => {
+    state.range = range;
+    recomputeFocus();
+    renderAll();
+  },
+  onSelect: (id) => {
+    state.selectedId = id;
+    const record = state.session?.records.find(r => r.id === id);
+    renderDetail(record ?? null);
+    renderAll();
+  },
+});
+
+ledger = new Ledger(document.getElementById('ledger'), {
+  onSelect: (id) => {
+    state.selectedId = id;
+    const record = state.session?.records.find(r => r.id === id);
+    renderDetail(record ?? null);
+    renderAll();
+  },
+  onToggleTurn: (turn) => {
+    if (state.collapsedTurns.has(turn)) state.collapsedTurns.delete(turn);
+    else state.collapsedTurns.add(turn);
+    renderAll();
+  },
+});
+
+document.getElementById('timeline').hidden = false;
+document.getElementById('search').disabled = false;
 
 loadSessionList();

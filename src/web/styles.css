@@ -211,3 +211,222 @@ body {
   font-size: 11px;
   color: var(--text);
 }
+
+/* --- 甘特图（timeline.js，样式结构移植自 dsh TrajectoryTimeline.module.css） --- */
+
+.timeline {
+  flex: none;
+  border-bottom: 1px solid var(--border);
+  user-select: none;
+  background: var(--bg-layer-2);
+}
+
+.tl-plot {
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr);
+  height: 68px;
+  overflow: hidden;
+}
+
+.tl-labels {
+  position: relative;
+  border-right: 1px solid var(--border);
+  color: var(--text-muted);
+  font-size: 10px;
+  line-height: 1;
+}
+
+.tl-labels span {
+  position: absolute;
+  right: 6px;
+  display: flex;
+  align-items: center;
+  height: 9px;
+  white-space: nowrap;
+}
+
+.tl-track {
+  position: relative;
+  overflow: hidden;
+  cursor: crosshair;
+  touch-action: none;
+  outline: none;
+}
+
+.tl-track:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+}
+
+.tl-empty {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.tl-lanes {
+  position: absolute;
+  z-index: 2;
+  top: 7px;
+  bottom: 7px;
+  left: 0;
+  right: 0;
+}
+
+.tl-boundaries {
+  position: absolute;
+  z-index: 3;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  pointer-events: none;
+}
+
+.tl-boundary {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--border);
+}
+
+/* span 通用（对应 dsh .span） */
+.tl-span {
+  position: absolute;
+  border-radius: 1px;
+  opacity: 0.85;
+  box-sizing: border-box;
+}
+
+/* Duration 泳道：灰 */
+.tl-duration {
+  background: var(--system);
+  opacity: 0.5;
+}
+
+/* Turns 泳道：蓝/绿交替（DESIGN 3.4） */
+.tl-turn-even {
+  background: var(--user);
+  opacity: 0.7;
+}
+
+.tl-turn-odd {
+  background: var(--success);
+  opacity: 0.7;
+}
+
+/* LLM Calls 泳道：紫；TTFT 段用浅色渐变（移植 dsh assistant-timing gradient） */
+.tl-assistant {
+  background: var(--assistant);
+  opacity: 1;
+}
+
+.tl-assistant.tl-ttft {
+  background: linear-gradient(
+    to right,
+    rgba(197, 134, 192, 0.35) 0,
+    rgba(197, 134, 192, 0.35) var(--ttft-frac, 0%),
+    var(--assistant) var(--ttft-frac, 0%),
+    var(--assistant) 100%
+  );
+}
+
+/* Tools 泳道：橙；错误红（DESIGN 3.4） */
+.tl-tool {
+  background: var(--tool);
+  opacity: 1;
+}
+
+.tl-error {
+  background: var(--error) !important;
+}
+
+.tl-span.tl-selected {
+  z-index: 5;
+  opacity: 1;
+  box-shadow:
+    0 0 0 1px var(--bg),
+    0 0 0 2px var(--accent);
+}
+
+.tl-span.tl-dim {
+  opacity: 0.12;
+}
+
+/* 框选（移植 dsh .selection / .selectionEdges） */
+.tl-selection {
+  position: absolute;
+  z-index: 4;
+  top: 0;
+  bottom: 0;
+  background: rgba(86, 156, 214, 0.15);
+  box-shadow:
+    -100vw 0 0 100vw rgba(30, 30, 30, 0.45),
+    100vw 0 0 100vw rgba(30, 30, 30, 0.45);
+  pointer-events: none;
+}
+
+.tl-selection::before,
+.tl-selection::after {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: var(--accent);
+  content: '';
+}
+
+.tl-selection::before { left: 0; }
+.tl-selection::after { right: 0; }
+
+/* tooltip（对应 dsh Tooltip） */
+.tl-tooltip {
+  position: absolute;
+  z-index: 10;
+  top: 72px;
+  left: 80px;
+  max-width: 480px;
+  padding: 6px 8px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  color: var(--text);
+  font-size: 11px;
+  white-space: pre-wrap;
+  pointer-events: none;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+}
+
+/* 模式切换 */
+.mode-switch {
+  display: flex;
+  gap: 2px;
+  flex: none;
+}
+
+.mode-btn {
+  background: var(--bg-card);
+  color: var(--text-muted);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  font-family: var(--mono);
+  font-size: 10px;
+  padding: 2px 8px;
+  cursor: pointer;
+}
+
+.mode-btn.active {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+/* 流水账空态 */
+.ledger-empty {
+  padding: 16px;
+  color: var(--text-muted);
+  text-align: center;
+}

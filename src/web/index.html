@@ -12,12 +12,15 @@
     <select id="session-picker" class="session-picker" title="历史会话"></select>
     <span id="session-title" class="session-title"></span>
     <span id="precision" class="precision"></span>
-    <input id="search" class="search" type="search" placeholder="搜索（tool 名 / 命令 / 文本）" disabled>
+    <div class="mode-switch">
+      <button id="mode-duration" class="mode-btn active" title="按真实时长比例，压缩空闲间隙">duration</button>
+      <button id="mode-time" class="mode-btn" title="真实墙钟，空闲如实留白">time</button>
+    </div>
+    <input id="search" class="search" type="search" placeholder="搜索（tool 名 / 命令 / 文本）">
   </header>
 
   <div id="stats" class="statsbar"></div>
 
-  <!-- M9：4 泳道甘特图挂载点 -->
   <div id="timeline" class="timeline" hidden></div>
 
   <main class="main">
