@@ -1,29 +1,36 @@
 /**
- * 流水账（DESIGN.md 3.5）：按 Turn 分组、虚拟滚动、搜索过滤。
- *
- * - 搜索索引移植自 dsh trajectory-search-index.ts（小写包含、多词 AND）
- * - 虚拟滚动移植自 dsh trajectory-virtual-rows.ts 的固定行高思路
- *   （CONTENT_ROW_HEIGHT / 分组头行高），窗口化渲染
- * - Turn 分组头可折叠（对齐 dsh TrajectoryTable 的 collapsedTurns）
+ * 流水账（DESIGN.md 3.5），视觉对齐 dsh TrajectoryTable：
+ * - 彩色 pill 徽章（对齐 dsh kindTag：背景晕染 + 圆角 + 650 字重）
+ * - turn rail 竖向连接线 + 小角标（对齐 dsh turnLabel/turnRail）
+ * - 行内 model/TTFT/tok-s（对齐 dsh assistant cell 指标）
+ * - 运行中记录脉冲（对齐 dsh runningCalls/partial cell）
+ * - 搜索索引移植自 dsh trajectory-search-index.ts
+ * - 虚拟滚动移植自 dsh trajectory-virtual-rows.ts 固定行高思路
  */
-import { formatClock, formatDurationMillis, formatElapsed } from './format.js';
+import { formatClock, formatDurationMillis, formatElapsed, formatTokens } from './format.js';
 
 export const KIND_BADGE = {
-  system: 'SYSTEM',
-  user: 'USER',
-  assistant: 'ASSISTANT',
-  tool: 'TOOL',
-  compaction: 'COMPACTION',
+  system: 'System',
+  user: 'User',
+  assistant: 'Message',
+  tool: 'Tool',
+  compaction: 'Compacted',
 };
 
-const HEADER_HEIGHT = 24;
-const ROW_HEIGHT = 22;
+/** 工具图标（对齐 dsh toolCatalogIcon 的视觉占位，用等宽 glyph）。 */
+const TOOL_ICONS = {
+  bash: '❯', read: '≡', write: '✎', edit: '✎', grep: '⌕', find: '⌕',
+  ls: '≡', glob: '⌕', webfetch: '◉', websearch: '⌕', todowrite: '☑',
+  task: '☑', mcp: '⬡',
+};
+
+const HEADER_HEIGHT = 22;
+const ROW_HEIGHT = 24;
 const OVERSCAN = 12;
-const VIRTUAL_THRESHOLD = 200; // DESIGN.md 3.9：> 200 行窗口化
+const VIRTUAL_THRESHOLD = 200;
 
 /**
  * 搜索索引（移植自 dsh TrajectorySearchIndex）。
- * 每条记录把可搜索源拼成一段小写文本；查询按空格分词、全部包含才算命中。
  */
 export class SearchIndex {
   constructor(session) {
@@ -32,27 +39,22 @@ export class SearchIndex {
   }
 
   static sources(record) {
-    const sources = [
+    return [
       record.kind,
-      record.kind === 'assistant' ? 'assistant' : '',
+      record.kind === 'assistant' ? 'assistant message' : '',
       record.toolName ?? '',
       record.model ?? '',
       record.provider ?? '',
       record.text ?? '',
       SearchIndex.json(record.args),
       SearchIndex.json(record.result),
-    ];
-    return sources.filter(Boolean).join('\n').toLocaleLowerCase();
+    ].filter(Boolean).join('\n').toLocaleLowerCase();
   }
 
   static json(value) {
     if (value === undefined || value === null) return '';
     if (typeof value === 'string') return value;
-    try {
-      return JSON.stringify(value);
-    } catch {
-      return '';
-    }
+    try { return JSON.stringify(value); } catch { return ''; }
   }
 
   update(session) {
@@ -62,10 +64,6 @@ export class SearchIndex {
     }
   }
 
-  /**
-   * @param {string} query
-   * @returns {Set<string>|null} 命中 id 集合；无查询词返回 null
-   */
   search(query) {
     const terms = query.trim().toLocaleLowerCase().split(/\s+/).filter(Boolean);
     if (terms.length === 0) return null;
@@ -77,9 +75,6 @@ export class SearchIndex {
   }
 }
 
-/**
- * 把 session 投影成扁平行列表（turn 头 + 记录行），应用搜索/框选/折叠过滤。
- */
 function buildRows(session, { searchIds, focusIds, collapsedTurns }) {
   const rows = [];
   const visible = (record) => {
@@ -95,7 +90,7 @@ function buildRows(session, { searchIds, focusIds, collapsedTurns }) {
     rows.push({ type: 'header', turn: turn.turn, height: HEADER_HEIGHT, collapsed, count: records.length });
     if (!collapsed) {
       for (const record of records) {
-        rows.push({ type: 'record', record, height: ROW_HEIGHT });
+        rows.push({ type: 'record', record, height: ROW_HEIGHT, turn: turn.turn });
       }
     }
   }
@@ -103,44 +98,45 @@ function buildRows(session, { searchIds, focusIds, collapsedTurns }) {
   if (orphans.length > 0) {
     rows.push({ type: 'header', turn: null, height: HEADER_HEIGHT, collapsed: false, count: orphans.length });
     for (const record of orphans) {
-      rows.push({ type: 'record', record, height: ROW_HEIGHT });
+      rows.push({ type: 'record', record, height: ROW_HEIGHT, turn: null });
     }
   }
   return rows;
 }
 
-function recordSummary(record) {
+/** 行内指标（对齐 dsh assistant cell 的 model/timing/usage 内联展示）。 */
+function recordMetrics(record) {
+  const bits = [];
   if (record.kind === 'assistant') {
-    const bits = [];
-    if (record.model) bits.push(record.model);
+    if (record.model) bits.push({ cls: 'metric-model', text: record.model });
     if (record.ttftMs !== null && record.ttftMs !== undefined) {
-      bits.push(`TTFT ${formatElapsed(record.ttftMs)}`);
+      bits.push({ cls: 'metric-ttft', text: `TTFT ${formatElapsed(record.ttftMs)}` });
     }
     if (record.usage) {
       const decodeMs = record.durationMs !== null && record.ttftMs !== null && record.ttftMs !== undefined
         ? Math.max(0, record.durationMs - record.ttftMs) : null;
       if (decodeMs !== null && decodeMs > 0 && record.usage.output > 0) {
-        bits.push(`${(record.usage.output / (decodeMs / 1000)).toFixed(1)} tok/s`);
+        bits.push({ cls: 'metric-rate', text: `${(record.usage.output / (decodeMs / 1000)).toFixed(1)} tok/s` });
       }
     }
-    return bits.join(' · ');
+  } else if (record.kind === 'tool') {
+    if (record.toolName) {
+      bits.push({ cls: 'metric-tool', text: `${TOOL_ICONS[record.toolName] ?? '⚙'} ${record.toolName}` });
+    }
   }
-  if (record.kind === 'tool' && record.toolName) {
-    const args = typeof record.args === 'object' && record.args !== null
-      ? ` ${JSON.stringify(record.args).slice(0, 120)}` : '';
-    return `${record.toolName}${args}`;
-  }
-  return record.text;
+  return bits;
 }
 
-/**
- * 流水账渲染器：虚拟滚动 + 折叠 + 选中。
- */
+function argsPreview(record) {
+  if (record.kind !== 'tool' || record.args === undefined || record.args === null) return '';
+  if (typeof record.args === 'string') return record.args;
+  try {
+    const json = JSON.stringify(record.args);
+    return json.length > 100 ? `${json.slice(0, 100)}…` : json;
+  } catch { return ''; }
+}
+
 export class Ledger {
-  /**
-   * @param {HTMLElement} container
-   * @param {{onSelect:(id:string|null)=>void, onToggleTurn:(turn:number)=>void}} handlers
-   */
   constructor(container, { onSelect, onToggleTurn }) {
     this.container = container;
     this.onSelect = onSelect;
@@ -156,10 +152,6 @@ export class Ledger {
     this.scroll.addEventListener('scroll', () => this.renderViewport());
   }
 
-  /**
-   * @param {object} session
-   * @param {{searchIds?:Set<string>|null, focusIds?:Set<string>|null, collapsedTurns?:Set<number>, selectedId?:string|null}} state
-   */
   update(session, state = {}) {
     this.session = session;
     if (state.selectedId !== undefined) this.selectedId = state.selectedId;
@@ -188,7 +180,6 @@ export class Ledger {
       for (const row of rows) this.canvas.appendChild(this.rowEl(row));
       return;
     }
-    // 虚拟滚动：固定行高，按 scrollTop 算可见窗口。
     const scrollTop = this.scroll.scrollTop;
     const viewport = this.scroll.clientHeight;
     let offset = 0;
@@ -204,15 +195,11 @@ export class Ledger {
     }
     const endOffset = scrollTop + viewport + OVERSCAN * ROW_HEIGHT;
     let endIndex = rows.length;
-    let totalHeight = offset;
+    let acc = offset;
     for (let i = startIndex; i < rows.length; i++) {
-      totalHeight += rows[i].height;
-      if (totalHeight > endOffset) {
-        endIndex = i + 1;
-        break;
-      }
+      acc += rows[i].height;
+      if (acc > endOffset) { endIndex = i + 1; break; }
     }
-    // 兜底：尾部行总高
     let fullHeight = 0;
     for (const row of rows) fullHeight += row.height;
     this.canvas.style.height = `${fullHeight}px`;
@@ -229,27 +216,53 @@ export class Ledger {
       el.className = 'turn-header';
       el.style.height = `${row.height}px`;
       const label = row.turn === null ? '—' : `Turn ${row.turn + 1}`;
-      el.textContent = row.collapsed ? `${label} (${row.count}) ▸` : `${label} ▾`;
+      el.innerHTML = `<span class="turn-label">${label}</span><span class="turn-count">${row.count}</span><span class="turn-caret">${row.collapsed ? '▸' : '▾'}</span>`;
       if (row.turn !== null) {
         el.addEventListener('click', () => this.onToggleTurn(row.turn));
       }
       return el;
     }
     const record = row.record;
+    // 运行中 = 进行中的 tool/assistant（user/system 的 durationMs 本来就是 null）。
+    const running = record.durationMs === null
+      && (record.kind === 'tool' || record.kind === 'assistant');
     const el = document.createElement('div');
-    el.className = `record record-${record.kind}${record.isError ? ' record-error' : ''}${record.id === this.selectedId ? ' selected' : ''}`;
+    el.className = `record record-${record.kind}${record.isError ? ' record-error' : ''}${record.id === this.selectedId ? ' selected' : ''}${running ? ' running' : ''}`;
     el.style.height = `${row.height}px`;
 
+    // turn rail（对齐 dsh turnRail 竖向连接线）
+    const rail = document.createElement('span');
+    rail.className = 'turn-rail';
+    el.appendChild(rail);
+
+    // pill 徽章（对齐 dsh kindTag）
     const badge = document.createElement('span');
-    badge.className = `badge badge-${record.kind}`;
+    badge.className = `kind-tag tag-${record.kind}`;
     badge.textContent = KIND_BADGE[record.kind] ?? record.kind;
     el.appendChild(badge);
 
-    const summary = document.createElement('span');
-    summary.className = 'summary';
-    summary.textContent = recordSummary(record);
-    el.appendChild(summary);
+    // 内容
+    const content = document.createElement('span');
+    content.className = 'content';
+    const text = document.createElement('span');
+    text.className = 'text';
+    text.textContent = record.kind === 'tool' ? argsPreview(record) : record.text;
+    content.appendChild(text);
+    for (const metric of recordMetrics(record)) {
+      const m = document.createElement('span');
+      m.className = `metric ${metric.cls}`;
+      m.textContent = metric.text;
+      content.appendChild(m);
+    }
+    if (running) {
+      const pulse = document.createElement('span');
+      pulse.className = 'running-dot';
+      pulse.textContent = '●';
+      content.appendChild(pulse);
+    }
+    el.appendChild(content);
 
+    // 右侧时间
     const meta = document.createElement('span');
     meta.className = 'meta';
     const time = formatClock(record.startedAt);
@@ -263,4 +276,4 @@ export class Ledger {
   }
 }
 
-export { formatDurationMillis as _formatDurationMillis };
+export { formatDurationMillis as _formatDurationMillis, formatTokens as _formatTokens };

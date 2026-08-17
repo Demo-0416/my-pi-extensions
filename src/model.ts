@@ -40,6 +40,8 @@ export interface TraceRecord {
   args?: unknown;
   /** 截断后的最终结果（tool_result content / details）。 */
   result?: unknown;
+  /** system 记录：system prompt 快照（独立 8KB 截断预算，对齐 dsh promptDetail）。 */
+  prompt?: string;
   exitCode?: number;
 }
 

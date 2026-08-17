@@ -34,6 +34,8 @@ interface LlmStart {
   firstTokenAt: number | null;
   model?: string;
   provider?: string;
+  /** 进行中的 assistant 记录 id（addRecord 广播但不落盘，闭合时 closeRecord）。 */
+  recordId?: string;
 }
 
 function textFromContent(content: unknown): string {
@@ -77,8 +79,8 @@ export class Collector {
   private readonly llmStarts: LlmStart[] = [];
   /** toolCallId → 进行中的 tool 记录。 */
   private readonly openTools = new Map<string, TraceRecord>();
-  /** turn_start 前到达的 user 记录（pi 先持久化 user 消息再开 turn）。 */
-  private pendingUserRecords: TraceRecord[] = [];
+  /** turn_start 前到达的记录（user 消息、system prompt 快照），等 turn_start 归属。 */
+  private pendingTurnRecords: TraceRecord[] = [];
   private currentTurn: number | null = null;
   private seq = 0;
 
@@ -148,14 +150,14 @@ export class Collector {
 
   onTurnStart(turnIndex: number, timestamp: number): void {
     this.currentTurn = turnIndex;
-    // user 消息先于 turn_start 到达，归入本 turn。
-    for (const record of this.pendingUserRecords) {
+    // user 消息和 system prompt 快照先于 turn_start 到达，归入本 turn。
+    for (const record of this.pendingTurnRecords) {
       record.turn = turnIndex;
       this.attachToTurn(record);
       appendRecord(this.session, record);
       this.emit({ type: 'record', record });
     }
-    this.pendingUserRecords = [];
+    this.pendingTurnRecords = [];
     if (!this.session.turns.some(t => t.turn === turnIndex)) {
       this.session.turns.push({ turn: turnIndex, startedAt: timestamp, endedAt: null, records: [] });
       this.session.turns.sort((a, b) => a.turn - b.turn);
@@ -166,12 +168,29 @@ export class Collector {
     const payloadModel = typeof payload === 'object' && payload !== null
       ? (payload as { model?: unknown }).model
       : undefined;
-    this.llmStarts.push({
+    const model = typeof payloadModel === 'string' ? payloadModel : fallbackModel;
+    const start: LlmStart = {
       startedAt: Date.now(),
       firstTokenAt: null,
-      model: typeof payloadModel === 'string' ? payloadModel : fallbackModel,
+      model,
       provider: fallbackProvider,
-    });
+    };
+    // 进行中的 assistant 记录：广播但不落盘（对齐 dsh runningCalls/partial cell）。
+    const record: TraceRecord = {
+      id: this.nextId(),
+      kind: 'assistant',
+      turn: this.currentTurn,
+      startedAt: start.startedAt,
+      durationMs: null,
+      text: model ? `${model} …` : '…',
+      isError: false,
+      model,
+      provider: fallbackProvider,
+      ttftMs: null,
+    };
+    start.recordId = record.id;
+    this.llmStarts.push(start);
+    this.addRecord(record);
   }
 
   onMessageUpdate(): void {
@@ -205,7 +224,7 @@ export class Collector {
       this.session.endedAt = record.startedAt;
       if (this.currentTurn === null) {
         // 等 turn_start 归属后再落盘 + 广播完整记录。
-        this.pendingUserRecords.push(record);
+        this.pendingTurnRecords.push(record);
       } else {
         this.attachToTurn(record);
         appendRecord(this.session, record);
@@ -218,6 +237,23 @@ export class Collector {
       const now = Date.now();
       const startedAt = start?.startedAt
         ?? (typeof message.timestamp === 'number' ? message.timestamp : now);
+      const existing = start?.recordId !== undefined
+        ? this.session.records.find(r => r.id === start.recordId)
+        : undefined;
+      const ttftMs = start?.firstTokenAt !== null && start?.firstTokenAt !== undefined
+        ? start.firstTokenAt - startedAt
+        : null;
+      if (existing !== undefined) {
+        // 闭合进行中的记录：补全字段后落盘 + 广播。
+        existing.text = oneLine(textFromContent(message.content));
+        existing.isError = message.stopReason === 'error';
+        existing.model = start?.model ?? message.model;
+        existing.provider = start?.provider ?? message.provider;
+        existing.usage = usageFromMessage(message);
+        existing.ttftMs = ttftMs;
+        this.closeRecord(existing, Math.max(0, now - startedAt));
+        return;
+      }
       const record: TraceRecord = {
         id: this.nextId(),
         kind: 'assistant',
@@ -229,9 +265,7 @@ export class Collector {
         model: start?.model ?? message.model,
         provider: start?.provider ?? message.provider,
         usage: usageFromMessage(message),
-        ttftMs: start?.firstTokenAt !== null && start?.firstTokenAt !== undefined
-          ? start.firstTokenAt - startedAt
-          : null,
+        ttftMs,
       };
       this.session.records.push(record);
       this.closeRecord(record, Math.max(0, now - startedAt));
@@ -322,6 +356,55 @@ export class Collector {
     this.attachToTurn(record);
     appendRecord(this.session, record);
     this.emit({ type: 'record', record });
+  }
+
+  /**
+   * system prompt + 工具目录快照（对齐 dsh SYSTEM 记录的 promptDetail）。
+   * 在 before_agent_start 采集：每次用户发起 agent run 一条。
+   * systemPrompt 单字段截断 8KB（DESIGN 3.11），超出部分前端标注 truncated。
+   */
+  onBeforeAgentStart(input: {
+    systemPrompt: string;
+    toolSnippets?: readonly string[];
+    selectedTools?: readonly string[];
+    model?: string;
+    provider?: string;
+    cwd?: string;
+    thinkingLevel?: string;
+    customPrompt?: string;
+  }): void {
+    const promptBytes = Buffer.byteLength(input.systemPrompt, 'utf8');
+    const record: TraceRecord = {
+      id: this.nextId(),
+      kind: 'system',
+      turn: this.currentTurn,
+      startedAt: Date.now(),
+      durationMs: null,
+      text: `system prompt · ${input.selectedTools?.length ?? input.toolSnippets?.length ?? 0} tools · ${input.model ?? '?'}`,
+      isError: false,
+      model: input.model,
+      provider: input.provider,
+      // system prompt 独立字段（8KB 截断），args 只放小体积元数据。
+      prompt: input.systemPrompt,
+      args: {
+        systemPromptBytes: promptBytes,
+        systemPromptTruncated: promptBytes > 8192,
+        tools: input.selectedTools ?? input.toolSnippets ?? [],
+        toolSnippets: input.toolSnippets ?? [],
+        cwd: input.cwd,
+        thinkingLevel: input.thinkingLevel,
+        customPrompt: input.customPrompt,
+      },
+    };
+    this.session.records.push(record);
+    if (this.currentTurn === null) {
+      // before_agent_start 先于 turn_start，缓冲到 turn_start 归属。
+      this.pendingTurnRecords.push(record);
+    } else {
+      this.attachToTurn(record);
+      appendRecord(this.session, record);
+      this.emit({ type: 'record', record });
+    }
   }
 
   /** 重新分组（sidecar 加载后修正 turn 桶）。 */

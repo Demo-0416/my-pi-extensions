@@ -64,7 +64,7 @@ console.log('sidecar records:', sidecar?.records.length, 'meta:', sidecar?.meta)
 
 // --- 3. Server ---
 const server = new TraceServer(join(import.meta.dirname, '..', 'src', 'web'));
-const port = server.start();
+const port = await server.start();
 console.log('server port:', port);
 server.register(collector);
 

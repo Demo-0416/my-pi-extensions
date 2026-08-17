@@ -120,6 +120,16 @@ function renderDetail(record) {
     sections.push(`<div class="detail-label">args</div><pre>${escapeHtml(JSON.stringify(record.args, null, 2))}</pre>`);
     sections.push(`<div class="detail-label">result</div><pre>${escapeHtml(typeof record.result === 'string' ? record.result : JSON.stringify(record.result, null, 2))}</pre>`);
     if (record.exitCode !== undefined) sections.push(`<div class="detail-label">exit code</div><pre>${record.exitCode}</pre>`);
+  } else if (record.kind === 'system') {
+    const args = record.args ?? {};
+    if (typeof record.prompt === 'string') {
+      sections.push(`<div class="detail-label">system prompt${args.systemPromptTruncated ? `（${formatBytes(args.systemPromptBytes)} → 截断 8KB）` : `（${formatBytes(args.systemPromptBytes)}）`}</div><pre>${escapeHtml(record.prompt)}</pre>`);
+    }
+    if (Array.isArray(args.tools) && args.tools.length > 0) {
+      sections.push(`<div class="detail-label">tools（${args.tools.length}）</div><pre>${escapeHtml(args.tools.join('\n'))}</pre>`);
+    }
+    if (args.thinkingLevel) sections.push(`<div class="detail-label">thinking level</div><pre>${escapeHtml(String(args.thinkingLevel))}</pre>`);
+    if (args.cwd) sections.push(`<div class="detail-label">cwd</div><pre>${escapeHtml(String(args.cwd))}</pre>`);
   } else if (record.kind === 'assistant') {
     sections.push(`<div class="detail-label">text</div><pre>${escapeHtml(record.text)}</pre>`);
     if (record.usage) {
@@ -143,7 +153,7 @@ function renderAll() {
     mode: state.mode,
     range: state.range,
     selectedId: state.selectedId,
-    dimIds: state.searchIds,
+    searchIds: state.searchIds,
   });
   ledger.update(session, {
     searchIds: state.searchIds,
@@ -267,6 +277,12 @@ function escapeHtml(text) {
     .replaceAll('&', '&amp;')
     .replaceAll('<', '&lt;')
     .replaceAll('>', '&gt;');
+}
+
+function formatBytes(bytes) {
+  if (!bytes) return '0 B';
+  if (bytes >= 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${bytes} B`;
 }
 
 document.getElementById('session-picker').addEventListener('change', async (e) => {

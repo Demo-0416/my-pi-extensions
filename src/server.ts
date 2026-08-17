@@ -49,8 +49,11 @@ export class TraceServer {
     this.webDir = webDir ?? join(dirname(fileURLToPath(import.meta.url)), 'web');
   }
 
-  /** 惰性启动：默认 43110，占用则向后试 10 个；实际端口写 ~/.pi/agent/traces/.port。 */
-  start(): number {
+  /**
+   * 惰性启动：默认 43110，占用则向后试 10 个；实际端口写 ~/.pi/agent/traces/.port。
+   * listen 的 EADDRINUSE 是异步 'error' 事件，用 Promise 包 'listening'/'error'。
+   */
+  async start(): Promise<number> {
     if (this.server !== null) return this.port;
     for (let attempt = 0; attempt < PORT_ATTEMPTS; attempt++) {
       const port = DEFAULT_PORT + attempt;
@@ -59,9 +62,13 @@ export class TraceServer {
           sendJson(res, 500, { error: String(error) });
         });
       });
-      try {
-        server.listen(port, '127.0.0.1');
-      } catch {
+      const bound = await new Promise<boolean>((resolve) => {
+        server.once('error', (err: NodeJS.ErrnoException) => {
+          resolve(err.code === 'EADDRINUSE' ? false : false);
+        });
+        server.listen(port, '127.0.0.1', () => resolve(true));
+      });
+      if (!bound) {
         server.close();
         continue;
       }
@@ -78,6 +85,11 @@ export class TraceServer {
 
   getPort(): number {
     return this.port;
+  }
+
+  /** 当前进程内活跃采集的会话 id（/trace pick 列表标记 live 用）。 */
+  liveSessionIds(): string[] {
+    return [...this.collectors.keys()];
   }
 
   /** 注册活跃采集会话（/api/session 与 SSE 优先用内存态）。 */

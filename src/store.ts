@@ -80,6 +80,7 @@ export function truncateRecord(record: TraceRecord): TraceRecord {
     text: truncateString(record.text),
     args: truncateField(record.args),
     result: truncateField(record.result),
+    ...(record.prompt === undefined ? {} : { prompt: truncateString(record.prompt) }),
   };
 }
 
