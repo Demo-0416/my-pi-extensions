@@ -45,20 +45,21 @@ function refreshWidget(ctx: ExtensionContext): void {
     return;
   }
   const stats = computeStats(collector.session);
+  const dim = (s: string) => theme.fg('dim', s);
   ctx.ui.setWidget(
     'pi-trace',
     (_tui, theme) => new Text(
       [
-        theme.fg('accent', '✻'),
-        theme.fg('muted', `${stats.turns} 轮`),
-        `LLM ${formatElapsed(stats.llmMs)}`,
-        stats.toolMs > 0 ? `工具 ${formatElapsed(stats.toolMs)}` : null,
-        stats.tokPerSec !== null ? `${stats.tokPerSec.toFixed(1)} tok/s` : null,
-        stats.cacheHitRate !== null ? `缓存 ${(stats.cacheHitRate * 100).toFixed(0)}%` : null,
-        stats.costTotal > 0 ? `$${stats.costTotal.toFixed(2)}` : null,
+        dim('✻'),
+        dim(`${stats.turns} 轮`),
+        dim(`LLM ${formatElapsed(stats.llmMs)}`),
+        stats.toolMs > 0 ? dim(`工具 ${formatElapsed(stats.toolMs)}`) : null,
+        stats.tokPerSec !== null ? dim(`${stats.tokPerSec.toFixed(1)} tok/s`) : null,
+        stats.cacheHitRate !== null ? dim(`缓存 ${(stats.cacheHitRate * 100).toFixed(0)}%`) : null,
+        stats.costTotal > 0 ? dim(`$${stats.costTotal.toFixed(2)}`) : null,
       ]
         .filter((part): part is string => part !== null)
-        .join(theme.fg('dim', ' · ')),
+        .join(dim(' · ')),
     ),
     { placement: 'belowEditor' },
   );
