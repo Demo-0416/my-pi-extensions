@@ -13,7 +13,7 @@ import { Collector } from './collector.ts';
 import { emptySession, type TraceSession } from './model.ts';
 import { listSessions, loadSession } from './session-loader.ts';
 import { extensionSrcDir, portFilePath } from './store.ts';
-import { computeStats, formatElapsed } from './stats.ts';
+import { computeStats, formatElapsed, widgetLineParts } from './stats.ts';
 import { join } from 'node:path';
 import { readFileSync } from 'node:fs';
 import { TraceServer } from './server.ts';
@@ -45,24 +45,10 @@ function refreshWidget(ctx: ExtensionContext): void {
     return;
   }
   const stats = computeStats(collector.session);
+  const parts = widgetLineParts(stats);
   ctx.ui.setWidget(
     'pi-trace',
-    (_tui, theme) => {
-      const dim = (s: string) => theme.fg('dim', s);
-      return new Text(
-        [
-          dim('✻'),
-          dim(`${stats.turns} 轮`),
-          dim(`LLM ${formatElapsed(stats.llmMs)}`),
-          stats.toolMs > 0 ? dim(`工具 ${formatElapsed(stats.toolMs)}`) : null,
-          stats.tokPerSec !== null ? dim(`${stats.tokPerSec.toFixed(1)} tok/s`) : null,
-          stats.cacheHitRate !== null ? dim(`缓存 ${(stats.cacheHitRate * 100).toFixed(0)}%`) : null,
-          stats.costTotal > 0 ? dim(`$${stats.costTotal.toFixed(2)}`) : null,
-        ]
-          .filter((part): part is string => part !== null)
-          .join(dim(' · ')),
-      );
-    },
+    (_tui, theme) => new Text(parts.map((p) => theme.fg('dim', p)).join(theme.fg('dim', ' · '))),
     { placement: 'belowEditor' },
   );
 }

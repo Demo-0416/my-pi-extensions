@@ -122,10 +122,15 @@ export function formatStatsLine(stats: TraceStats): string {
  * 与 formatStatsLine 的区别：带 ✻ 前缀、省略 TTFT（widget 空间有限）。
  */
 export function formatWidgetLine(stats: TraceStats): string {
+  return widgetLineParts(stats).join(' · ');
+}
+
+/** widget 行的各段（未上色），供 TUI 层逐段着色，也便于单测。 */
+export function widgetLineParts(stats: TraceStats): string[] {
   const parts: string[] = [`✻ ${stats.turns} 轮`, `LLM ${formatElapsed(stats.llmMs)}`];
   if (stats.toolMs > 0) parts.push(`工具 ${formatElapsed(stats.toolMs)}`);
   if (stats.tokPerSec !== null) parts.push(`${stats.tokPerSec.toFixed(1)} tok/s`);
   if (stats.cacheHitRate !== null) parts.push(`缓存 ${(stats.cacheHitRate * 100).toFixed(0)}%`);
   if (stats.costTotal > 0) parts.push(`$${stats.costTotal.toFixed(2)}`);
-  return parts.join(' · ');
+  return parts;
 }

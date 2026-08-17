@@ -10,7 +10,7 @@ import { join } from 'node:path';
 import { reconstructFromSessionFile } from '../src/session-loader.ts';
 import { emptySession } from '../src/model.ts';
 import { Collector } from '../src/collector.ts';
-import { computeStats } from '../src/stats.ts';
+import { computeStats, widgetLineParts } from '../src/stats.ts';
 import { readSidecar, TRACES_DIR } from '../src/store.ts';
 import { TraceServer } from '../src/server.ts';
 
@@ -59,6 +59,10 @@ collector.onToolExecutionEnd('call_9', 'done', false);
 collector.onTurnEnd(0);
 console.log('live records:', live.records.map(r => ({ kind: r.kind, turn: r.turn, dur: r.durationMs, ttft: r.ttftMs, exit: r.exitCode })));
 console.log('live stats:', computeStats(live));
+// widget 行（防 theme 作用域类回归：纯函数可单测）
+const widgetParts = widgetLineParts(computeStats(live));
+console.log('widget parts:', widgetParts);
+if (!widgetParts[0].startsWith('✻')) throw new Error('widget line missing ✻ prefix');
 const sidecar = readSidecar('live-session-id');
 console.log('sidecar records:', sidecar?.records.length, 'meta:', sidecar?.meta);
 
