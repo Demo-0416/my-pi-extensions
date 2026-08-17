@@ -91,8 +91,7 @@ export default function (pi: ExtensionAPI): void {
     }
     collector = new Collector(session);
     collector.regroup();
-    const started = await ensureServer();
-    if (started !== null) started.register(collector);
+    // server 懒启动：不在 session_start 起，只在 /trace 时拉起（避免多 pi 进程抢端口）。
     refreshWidget(ctx);
   });
 
@@ -177,9 +176,14 @@ export default function (pi: ExtensionAPI): void {
       return null;
     },
     handler: async (args, ctx) => {
-      // port：优先本进程的 server，其次读 .port 文件（多 pi 进程场景下
-      // 其他进程的 server 也能通过 sidecar 服务本会话）。
-      let port = server?.getPort() ?? 0;
+      // 懒启动：首次 /trace 时才起 server，并注册当前会话的 collector。
+      const started = await ensureServer();
+      if (started === null) {
+        ctx.ui.notify('pi-trace server failed to start', 'error');
+        return;
+      }
+      if (collector !== null) started.register(collector);
+      const port = started.getPort();
       if (port === 0) {
         try {
           port = Number(readFileSync(portFilePath(), 'utf8').trim());
@@ -192,7 +196,7 @@ export default function (pi: ExtensionAPI): void {
       // session ID 从 ctx 实时取，不用模块级变量（重载/多进程下可能过时）。
       let sessionId = ctx.sessionManager.getSessionId() ?? currentSessionId;
       if (args.trim() === 'pick') {
-        const liveIds = new Set(server?.liveSessionIds() ?? []);
+        const liveIds = new Set(started.liveSessionIds());
         const sessions = listSessions(liveIds);
         if (sessions.length === 0) {
           ctx.ui.notify('no sessions found', 'warning');
