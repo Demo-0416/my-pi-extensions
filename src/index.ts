@@ -98,6 +98,10 @@ export default function (pi: ExtensionAPI): void {
     });
   });
 
+  pi.on('input', (event, _ctx) => {
+    collector?.onInput({ kind: event.source });
+  });
+
   pi.on('turn_start', (event, _ctx) => {
     collector?.onTurnStart(event.turnIndex, event.timestamp);
   });

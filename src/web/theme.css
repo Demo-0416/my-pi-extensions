@@ -1,0 +1,183 @@
+/*
+ * pi-trace 主题 token：给 vendored dsh CSS 的 dsw / ds / dsl 变量赋值。
+ * 亮色主题，对齐 dsh web 截图观感。trajectory 前缀变量由组件内联设置，不在此列。
+ */
+:root {
+  /* 背景层 */
+  --dsw-alias-bg-base: #f6f7f9;
+  --dsw-alias-bg-layer-1: #ffffff;
+  --dsw-alias-bg-layer-2: #f2f3f5;
+  --dsw-alias-bg-layer-3: #e9ebef;
+  --dsw-alias-bg-module-platform: #f0f1f4;
+  --dsw-specific-sidebar-fill: #ffffff;
+  --dsw-specific-menu: #ffffff;
+
+  /* 边框 */
+  --dsw-alias-border-l1: #e4e6ea;
+  --dsw-alias-border-l2: #d3d6dc;
+  --dsw-alias-border-l3: #b9bec7;
+  --dsw-alias-border-inverted: #ffffff;
+
+  /* 文本 */
+  --dsw-alias-label-primary: #1b1d22;
+  --dsw-alias-label-secondary: #5b5f68;
+  --dsw-alias-label-tertiary: #8a8f99;
+  --dsw-alias-label-caption: #a6aab3;
+  --dsw-alias-label-dimmed: #c2c5cc;
+
+  /* 品牌 / 交互 */
+  --dsw-alias-brand-primary-new-colorprimary-new-color: #3370ff;
+  --dsw-alias-state-business-primary: #3370ff;
+  --dsw-alias-state-business-tertiary: rgba(51, 112, 255, 0.10);
+  --dsw-alias-interactive-bg-hover: rgba(51, 112, 255, 0.06);
+  --dsw-alias-interactive-bg-active: rgba(51, 112, 255, 0.12);
+  --dsw-alias-interactive-bg-hover-danger: rgba(217, 45, 32, 0.06);
+  --dsw-alias-button-ghost-active-fill: rgba(51, 112, 255, 0.12);
+  --dsw-static-blue-500: #3370ff;
+  --dsw-static-neutral-bluish-00: #ffffff;
+
+  /* 状态色 */
+  --dsw-alias-state-error-primary: #d92d20;
+  --dsw-alias-state-error-secondary: rgba(217, 45, 32, 0.10);
+  --dsw-alias-state-success-primary: #12a15a;
+  --dsw-alias-state-success-tertiary: rgba(18, 161, 90, 0.10);
+  --dsw-alias-state-warn-label: #b54708;
+  --dsw-alias-state-warn-tertiary: rgba(247, 144, 9, 0.10);
+
+  /* 滚动条 */
+  --dsw-alias-scrollbar-bg-l2: #cbcfd6;
+  --dsw-alias-scrollbar-hover-l2: #a9aeb8;
+
+  /* 阴影 */
+  --dsw-shadow-lv2: 0 2px 8px rgba(20, 22, 28, 0.08);
+  --dsw-shadow-lv3: 0 6px 20px rgba(20, 22, 28, 0.14);
+
+  /* 字体 */
+  --dsw-font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+    "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  --ds-font-family-code: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --dsw-font-xxxs-11: 11px;
+  --dsw-font-xxs-12: 12px;
+  --dsw-font-xs-13: 13px;
+  --dsw-font-xs-strong-13: 600 13px/1.5 var(--dsw-font-family);
+  --ds-ease-in-out: cubic-bezier(0.4, 0, 0.2, 1);
+  --ds-transition-duration: 160ms;
+
+  /* markdown */
+  --dsw-font-markdown-base: 14px/1.7 var(--dsw-font-family);
+  --dsw-font-markdown-base-strong: 600 14px/1.7 var(--dsw-font-family);
+  --dsw-font-markdown-h1: 600 22px/1.4 var(--dsw-font-family);
+  --dsw-font-markdown-h2: 600 19px/1.4 var(--dsw-font-family);
+  --dsw-font-markdown-h3: 600 16px/1.5 var(--dsw-font-family);
+  --dsw-font-markdown-h4: 600 14px/1.5 var(--dsw-font-family);
+  --dsw-font-markdown-code: 12.5px/1.6 var(--ds-font-family-code);
+  --dsw-font-markdown-code-block: 12.5px/1.6 var(--ds-font-family-code);
+  --dsw-font-markdown-table: 13px/1.6 var(--dsw-font-family);
+  --dsw-font-markdown-table-head: 600 13px/1.6 var(--dsw-font-family);
+  --dsw-alias-markdown-code-block: #f5f6f8;
+  --dsw-alias-markdown-code-block-banner: #eceef2;
+  --dsw-alias-markdown-inline-code: rgba(51, 112, 255, 0.08);
+  --dsw-alias-markdown-citation: #3370ff;
+
+  /* code block (dsl) */
+  --dsl-code-block-banner-background-color: #eceef2;
+  --dsl-code-block-banner-font: 600 11px/1.4 var(--ds-font-family-code);
+  --dsl-code-block-border-radius: 8px;
+  --dsl-code-block-content-font: 12.5px/1.6 var(--ds-font-family-code);
+
+  /* tooltip */
+  --dsw-alias-tooltip-bg: #1b1d22;
+
+  /* json tree */
+  --json-tree-property: #3370ff;
+  --json-tree-string: #0f8a5f;
+  --json-tree-number: #d92d20;
+  --json-tree-keyword: #7a3ff0;
+  --json-tree-punctuation: #8a8f99;
+  --json-tree-icon: #8a8f99;
+  --json-tree-hover: #f2f3f5;
+
+  /* 轨迹布局 */
+  --dsh-trajectory-toolbar-height: 40px;
+  --dsh-trajectory-bottom-clearance: 0px;
+  --dsh-composer-height: 0px;
+
+  color-scheme: light;
+}
+
+body {
+  margin: 0;
+  background: var(--dsw-alias-bg-base);
+  color: var(--dsw-alias-label-primary);
+  font: var(--dsw-font-xs-13);
+  font-family: var(--dsw-font-family);
+}
+
+.pi-trace-root {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  overflow: hidden;
+}
+
+/* 顶栏（会话选择 + 统计） */
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 12px;
+  background: var(--dsw-alias-bg-layer-1);
+  border-bottom: 1px solid var(--dsw-alias-border-l1);
+  flex: none;
+  min-height: 36px;
+}
+.topbar .brand {
+  font-weight: 650;
+  color: var(--dsw-alias-label-primary);
+  flex: none;
+}
+.session-picker {
+  max-width: 360px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 6px;
+  background: var(--dsw-alias-bg-layer-1);
+  color: var(--dsw-alias-label-primary);
+  padding: 2px 6px;
+  font-size: 12px;
+}
+.precision {
+  flex: none;
+  font-size: 10px;
+  font-weight: 650;
+  padding: 1px 6px;
+  border-radius: 4px;
+}
+.precision-rich { color: var(--dsw-alias-state-success-primary); background: var(--dsw-alias-state-success-tertiary); }
+.precision-reconstructed { color: var(--dsw-alias-state-warn-label); background: var(--dsw-alias-state-warn-tertiary); }
+.precision-live { color: var(--dsw-alias-state-business-primary); background: var(--dsw-alias-state-business-tertiary); }
+.topbar .stats {
+  margin-left: auto;
+  color: var(--dsw-alias-label-secondary);
+  font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 流水账容器（dsh TrajectoryView 的 css.ledger） */
+.ledger {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.empty {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 13px;
+}

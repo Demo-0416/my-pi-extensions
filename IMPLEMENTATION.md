@@ -14,27 +14,47 @@
 | `src/session-loader.ts` | 历史 session JSONL 重建（3.7 启发式，`reconstructed` 精度） | 自写 |
 | `src/stats.ts` | 3.6 统计口径（轮数/步数/LLM 时长/工具时长/TTFT/tok-s/缓存命中/费用） | DESIGN 3.6 |
 | `src/server.ts` | node:http + SSE（3.8 路由），只绑 127.0.0.1，43110 占用递增，`.port` 文件 | 自写 |
-| `src/web/` | 无构建 vanilla JS ESM 前端 | 自写 |
 
-### M9 — 甘特图 + 统计栏 + 历史回放 + 搜索
+### M9 — React 前端（vendor dsh ui-trajectory）
 
-| 文件 | 内容 | 移植来源 |
+前端打翻重做，直接 vendor dsh `ui-trajectory` 源码（MIT），esbuild 预构建为自包含 bundle。
+
+| 文件 | 内容 | 来源 |
 |---|---|---|
-| `src/web/timeline.js` | 4 泳道甘特投影 + 渲染 + 交互 | dsh `timeline.ts`（投影算法逐行移植）、`TrajectoryTimeline.tsx`（缩放/平移/框选/hover） |
-| `src/web/ledger.js` | 按 Turn 分组流水账 + 虚拟滚动 + 搜索 | dsh `trajectory-search-index.ts`（搜索）、`trajectory-virtual-rows.ts`（虚拟滚动） |
-| `src/web/format.js` | 格式化工具 | dsh `trajectory-record.ts`（`formatDurationMillis` 等同名函数） |
+| `src/web/vendor/` | dsh ui-trajectory 客户端源码（layout/timeline/record/preview/search-index/virtual-rows + Table/Timeline/Toolbar/Cell/Turn 组件 + CSS modules） | dsh `packages/client/ui-trajectory`（MIT） |
+| `src/web/primitives/` | dsh ui-primitives 子集（markdown 渲染器、JsonTree、Tooltip、SVG 图标） | dsh `packages/client/ui-primitives`（MIT） |
+| `src/web/adapter.ts` | pi `TraceSession` JSON → dsh layout 输入（nodes/requests/partial/runningCalls/callSchemas） | 自写 |
+| `src/web/host.tsx` | 视图入口：状态管理 + SSE + 会话选择 + 统计栏，渲染 dsh Table/Timeline/Toolbar | 自写（状态逻辑移植自 dsh `TrajectoryView.tsx`） |
+| `src/web/build.mjs` | esbuild 构建 + 自写 CSS Modules 插件（类名加 `dsh-<file>-` 前缀，运行时注入 `<style>`） | 自写 |
+| `src/web/theme.css` | dsh 设计 token 赋值（`--dsw-*`/`--ds-*`/`--dsl-*`，亮色主题） | 自写 |
 
-4 泳道（DESIGN 3.4）：Duration 灰 / Turns 蓝绿交替 / LLM Calls 紫（TTFT 渐变刻度）/ Tools 橙（错误红）。
+**构建**：`cd src/web && npm install && npm run build` → `src/web/dist/`（自包含 ESM bundle + 懒加载 grammar chunks）。server 直接 serve `dist/`。
 
-### 视觉 + 交互对齐 dsh
+**dsh 依赖处理**：ui-trajectory 对 dsh 自家包的依赖全是 `import type`（构建时擦除）；真实运行时依赖只有 react、@tanstack/react-virtual、diff、shiki、katex、micromark 生态（全部公开 npm）。
 
-- **kindTag 彩色 pill 徽章**（背景晕染 + 圆角 + 650 字重，dsh `TrajectoryCell.module.css` 配色语义）
-- **turn rail 竖向连接线** + turn 计数角标（dsh `turnRail`/`turnLabel`）
-- **行内 model/TTFT/tok-s 指标**、工具图标（dsh assistant cell metrics）
-- **system prompt 采集**（对齐 dsh SYSTEM 记录的 `promptDetail`）：`before_agent_start` 采完整 system prompt + 工具目录快照，`TraceRecord.prompt` 字段独立 8KB 截断
-- **流式 cell**：`before_provider_request` 创建进行中的 assistant 记录并广播（不落盘），`message_end` 闭合（对齐 dsh `runningCalls`/`partial`）
-- **甘特交互**：滚轮缩放（锚定光标）、右键平移、框选边缘平移、hover 竖线、span 状态机（selected/current/hovered/search-match/dim）、双击/Escape 清除、单击空白居中最小选区并聚焦最近记录
-- **运行中脉冲**动画
+### Collector 数据补全（M9）
+
+为喂饱 dsh layout，collector 在 M8 基础上补采：
+
+| 字段 | 来源 | dsh 对应 |
+|---|---|---|
+| `thinking` | assistant 消息的 `ThinkingContent` 块 | `thinkingDetail` / Reasoning 区块 |
+| `toolCalls` | assistant 消息的 `ToolCall` 块（callId/name/argsRaw） | `AssistantBlock` tool-call |
+| `requestConfig` | `before_provider_request` payload（model/temperature/thinking/stop） | `requestConfig` / Options tab |
+| `promptSnapshot` | `before_provider_request` payload（system + tools 含 schema） | `promptDetail` / System Prompt+Tools tab |
+| `toolSchemas` | `before_provider_request` payload 的 tools 数组 | `callSchemas` / Schema tab |
+| `callId` | `tool_execution_start` 的 toolCallId | `callId`（跨记录跳转） |
+| `source` | `input` 事件（interactive/rpc/extension） | `messageSource` / Source tab |
+| `fullText` | assistant/user 完整正文（8KB 截断） | `previewMarkdown`/`outputDetail` |
+| `usage.reasoning` | pi usage 的 reasoning tokens | `reasoningTokens` |
+
+### 视觉 + 交互（dsh 原生）
+
+- **甘特图**：3 泳道（Input/Model/Tools），4 种投影（sequence/duration/time/actual），滚轮缩放（锚定光标）、右键平移、框选边缘平移、hover 竖线、TTFT 渐变刻度、turn 边界、span 状态机
+- **流水账**：turn → group（Message/Step N）→ cell，kindTag 彩色 pill，tool 行内联结果预览，请求边界 + LLM 编号（含累计 usage），turn + assistant 双层折叠
+- **详情面板**：按 kind 出 tab——user/assistant = Summary/Preview/Raw/Source；tool = Summary/Payload/Result/Schema/Timing；system = System Prompt/Tools/Diff；markdown 渲染（shiki 高亮 + katex）、JsonTree、跨记录跳转
+- **搜索**：实时全文索引（3s 节流），时间线 span 联动高亮
+- **流式**：partial assistant + runningCalls 实时追加
 
 ### M10 — TUI
 
@@ -46,12 +66,11 @@
 
 | 项 | 原因 |
 |---|---|
-| `sequence`/`actual` 投影模式 | DESIGN 3.4 标注 v2；投影代码已移植，UI 只暴露 duration/time |
 | 全屏 TUI 轨迹（`ctx.ui.custom()`） | DESIGN 3.10 明确暂缓 |
-| dsh 的 prompt diff（前后快照对比） | dsh `previousPromptDetail`；pi 侧无直接对应，v2 |
-| dsh 的 tool schema 详情 | `schemaDetail`；pi 侧可从 `pi.getAllTools()` 补，v2 |
-| markdown 渲染（dsh 用 MarkdownText） | 前端用 `<pre>` 纯文本，v2 |
-| 甘特滚轮缩放的触屏/触控板惯性 | dsh 也只处理 wheel |
+| dsh 的 load older history 分页 | pi 侧 sidecar 全量加载，会话量级不需要 |
+| dsh 的 inspect 跨视图深链 | 本扩展无 chat 视图，不需要 |
+| 图片消息块 | pi 支持 ImageContent，adapter 目前只取 text；v2 |
+| subtool 嵌套调用 | pi 无 run_code 式嵌套分发，不需要 |
 
 ## 测试方法
 
@@ -121,7 +140,7 @@ Web 前端：甘特图（4 泳道）+ 统计栏 + 按 Turn 分组流水账 + 搜
 - **采集与展示分离**：Collector 只认 pi 事件，输出统一 TraceRecord
 - **sidecar 而非 session 文件**：富时序数据不污染 session JSONL，不进 LLM 上下文
 - **两级精度**：sidecar 存在 = rich；不存在 = 从 session JSONL 重建
-- **运行时零 npm 依赖**：server 用 node:http，前端无构建 vanilla JS ESM
+- **运行时零 npm 依赖（后端）**：server 用 node:http；前端依赖在 `src/web/package.json`，构建后 bundle 自包含
 
 ## 安全边界
 

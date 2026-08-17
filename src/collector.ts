@@ -36,6 +36,10 @@ interface LlmStart {
   provider?: string;
   /** 进行中的 assistant 记录 id（addRecord 广播但不落盘，闭合时 closeRecord）。 */
   recordId?: string;
+  /** before_provider_request 提取的请求级元数据。 */
+  requestConfig?: TraceRecord['requestConfig'];
+  toolSchemas?: Record<string, unknown>;
+  promptSnapshot?: TraceRecord['promptSnapshot'];
 }
 
 function textFromContent(content: unknown): string {
@@ -60,7 +64,7 @@ function oneLine(text: string, max = 200): string {
 
 function usageFromMessage(message: { usage?: unknown }): TraceUsage | undefined {
   const usage = message.usage as
-    | { input?: number; output?: number; cacheRead?: number; cacheWrite?: number; cost?: { total?: number } }
+    | { input?: number; output?: number; cacheRead?: number; cacheWrite?: number; reasoning?: number; cost?: { total?: number } }
     | undefined;
   if (!usage) return undefined;
   return {
@@ -69,6 +73,118 @@ function usageFromMessage(message: { usage?: unknown }): TraceUsage | undefined 
     cacheRead: usage.cacheRead ?? 0,
     cacheWrite: usage.cacheWrite ?? 0,
     costTotal: usage.cost?.total ?? 0,
+    ...(typeof usage.reasoning === 'number' ? { reasoning: usage.reasoning } : {}),
+  };
+}
+
+/** 提取 assistant 消息里的 tool_call 块（pi ToolCall: {type:'toolCall', id, name, arguments}）。 */
+function toolCallsFromContent(content: unknown): Array<{ callId: string; name: string; argsRaw: string }> {
+  if (!Array.isArray(content)) return [];
+  const out: Array<{ callId: string; name: string; argsRaw: string }> = [];
+  for (const block of content) {
+    if (typeof block !== 'object' || block === null) continue;
+    if ((block as { type?: unknown }).type !== 'toolCall') continue;
+    const call = block as { id?: unknown; name?: unknown; arguments?: unknown };
+    if (typeof call.id !== 'string' || typeof call.name !== 'string') continue;
+    let argsRaw = '{}';
+    try {
+      argsRaw = JSON.stringify(call.arguments ?? {});
+    } catch {
+      argsRaw = String(call.arguments);
+    }
+    out.push({ callId: call.id, name: call.name, argsRaw });
+  }
+  return out;
+}
+
+/** 提取 reasoning/thinking 正文（pi ThinkingContent: {type:'thinking', thinking}）。 */
+function thinkingFromContent(content: unknown): string {
+  if (!Array.isArray(content)) return '';
+  const parts: string[] = [];
+  for (const block of content) {
+    if (typeof block !== 'object' || block === null) continue;
+    const type = (block as { type?: unknown }).type;
+    if (type !== 'thinking' && type !== 'reasoning') continue;
+    const text = (block as { thinking?: unknown; text?: unknown }).thinking
+      ?? (block as { text?: unknown }).text;
+    if (typeof text === 'string') parts.push(text);
+  }
+  return parts.join('\n\n');
+}
+
+/**
+ * 从 provider 请求 payload 提取请求配置 / prompt 快照 / tool schemas。
+ * payload 形状随 provider 不同（OpenAI function wrapper / Anthropic input_schema），防御式提取。
+ */
+function extractRequestInfo(payload: unknown, fallbackModel?: string, fallbackProvider?: string) {
+  const p = typeof payload === 'object' && payload !== null
+    ? payload as Record<string, unknown>
+    : {};
+  const model = typeof p.model === 'string' ? p.model : fallbackModel;
+  const requestConfig: NonNullable<TraceRecord['requestConfig']> = {
+    ...(fallbackProvider !== undefined ? { provider: fallbackProvider } : {}),
+    ...(model !== undefined ? { model } : {}),
+    ...(typeof p.thinking === 'string' ? { thinking: p.thinking } : {}),
+    ...(typeof p.reasoningEffort === 'string' ? { reasoningEffort: p.reasoningEffort } : {}),
+    ...(typeof p.reasoning_effort === 'string' ? { reasoningEffort: p.reasoning_effort } : {}),
+    ...(typeof p.temperature === 'number' ? { temperature: p.temperature } : {}),
+    ...(typeof p.maxTokens === 'number' ? { maxTokens: p.maxTokens } : {}),
+    ...(typeof p.max_tokens === 'number' ? { maxTokens: p.max_tokens } : {}),
+    ...(Array.isArray(p.stop) ? { stop: p.stop.filter((s): s is string => typeof s === 'string') } : {}),
+  };
+  const toolSchemas: Record<string, unknown> = {};
+  const toolList: NonNullable<TraceRecord['promptSnapshot']>['tools'] = [];
+  if (Array.isArray(p.tools)) {
+    for (const t of p.tools) {
+      if (typeof t !== 'object' || t === null) continue;
+      const tool = t as Record<string, unknown>;
+      // OpenAI: {type:'function', function:{name, description, parameters}}；其他：平铺。
+      const fn = typeof tool.function === 'object' && tool.function !== null
+        ? tool.function as Record<string, unknown>
+        : tool;
+      const name = typeof fn.name === 'string' ? fn.name : undefined;
+      if (name === undefined) continue;
+      const schema = fn.parameters ?? fn.input_schema ?? fn.inputSchema;
+      if (schema !== undefined) toolSchemas[name] = schema;
+      toolList.push({
+        name,
+        ...(typeof fn.description === 'string' ? { description: fn.description } : {}),
+        ...(schema !== undefined ? { parameters: schema } : {}),
+      });
+    }
+  }
+  let system = '';
+  if (typeof p.system === 'string') {
+    system = p.system;
+  } else if (Array.isArray(p.system)) {
+    system = p.system
+      .map((b) => (typeof b === 'object' && b !== null && typeof (b as { text?: unknown }).text === 'string'
+        ? (b as { text: string }).text
+        : ''))
+      .join('\n');
+  } else if (Array.isArray(p.messages)) {
+    const first = p.messages[0];
+    if (typeof first === 'object' && first !== null) {
+      const role = (first as { role?: unknown }).role;
+      if (role === 'system' || role === 'developer') {
+        const content = (first as { content?: unknown }).content;
+        system = typeof content === 'string'
+          ? content
+          : Array.isArray(content)
+            ? content.map((b) => (typeof b === 'object' && b !== null && typeof (b as { text?: unknown }).text === 'string'
+              ? (b as { text: string }).text
+              : '')).join('\n')
+            : '';
+      }
+    }
+  }
+  const promptSnapshot = system !== '' || toolList.length > 0
+    ? { system, tools: toolList }
+    : undefined;
+  return {
+    requestConfig,
+    toolSchemas: Object.keys(toolSchemas).length > 0 ? toolSchemas : undefined,
+    promptSnapshot,
   };
 }
 
@@ -83,6 +199,8 @@ export class Collector {
   private pendingTurnRecords: TraceRecord[] = [];
   private currentTurn: number | null = null;
   private seq = 0;
+  /** 最近一次 input 事件的来源（归因到下一条 user 记录）。 */
+  private lastInputSource: unknown = null;
 
   constructor(session: TraceSession) {
     this.session = session;
@@ -169,11 +287,15 @@ export class Collector {
       ? (payload as { model?: unknown }).model
       : undefined;
     const model = typeof payloadModel === 'string' ? payloadModel : fallbackModel;
+    const info = extractRequestInfo(payload, fallbackModel, fallbackProvider);
     const start: LlmStart = {
       startedAt: Date.now(),
       firstTokenAt: null,
       model,
       provider: fallbackProvider,
+      requestConfig: info.requestConfig,
+      toolSchemas: info.toolSchemas,
+      promptSnapshot: info.promptSnapshot,
     };
     // 进行中的 assistant 记录：广播但不落盘（对齐 dsh runningCalls/partial cell）。
     const record: TraceRecord = {
@@ -218,7 +340,9 @@ export class Collector {
         startedAt: typeof message.timestamp === 'number' ? message.timestamp : Date.now(),
         durationMs: null,
         text: oneLine(textFromContent(message.content)),
+        fullText: textFromContent(message.content),
         isError: false,
+        source: this.lastInputSource ?? undefined,
       };
       this.session.records.push(record);
       this.session.endedAt = record.startedAt;
@@ -246,11 +370,17 @@ export class Collector {
       if (existing !== undefined) {
         // 闭合进行中的记录：补全字段后落盘 + 广播。
         existing.text = oneLine(textFromContent(message.content));
+        existing.fullText = textFromContent(message.content);
+        existing.thinking = thinkingFromContent(message.content) || undefined;
+        existing.toolCalls = toolCallsFromContent(message.content);
         existing.isError = message.stopReason === 'error';
         existing.model = start?.model ?? message.model;
         existing.provider = start?.provider ?? message.provider;
         existing.usage = usageFromMessage(message);
         existing.ttftMs = ttftMs;
+        existing.requestConfig = start?.requestConfig;
+        existing.toolSchemas = start?.toolSchemas;
+        existing.promptSnapshot = start?.promptSnapshot;
         this.closeRecord(existing, Math.max(0, now - startedAt));
         return;
       }
@@ -261,11 +391,17 @@ export class Collector {
         startedAt,
         durationMs: null,
         text: oneLine(textFromContent(message.content)),
+        fullText: textFromContent(message.content),
+        thinking: thinkingFromContent(message.content) || undefined,
+        toolCalls: toolCallsFromContent(message.content),
         isError: message.stopReason === 'error',
         model: start?.model ?? message.model,
         provider: start?.provider ?? message.provider,
         usage: usageFromMessage(message),
         ttftMs,
+        requestConfig: start?.requestConfig,
+        toolSchemas: start?.toolSchemas,
+        promptSnapshot: start?.promptSnapshot,
       };
       this.session.records.push(record);
       this.closeRecord(record, Math.max(0, now - startedAt));
@@ -284,10 +420,16 @@ export class Collector {
       text: `${toolName} ${oneLine(JSON.stringify(args ?? {}), 120)}`,
       isError: false,
       toolName,
+      callId: toolCallId,
       args: truncateField(args),
     };
     this.openTools.set(toolCallId, record);
     this.addRecord(record);
+  }
+
+  /** input 事件：记录来源，归因到下一条 user 记录。 */
+  onInput(source: unknown): void {
+    this.lastInputSource = source;
   }
 
   onToolResult(

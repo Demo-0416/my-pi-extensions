@@ -4,30 +4,9 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>pi-trace</title>
-  <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
-  <header class="topbar">
-    <div class="brand">✻ pi-trace</div>
-    <select id="session-picker" class="session-picker" title="历史会话"></select>
-    <span id="session-title" class="session-title"></span>
-    <span id="precision" class="precision"></span>
-    <div class="mode-switch">
-      <button id="mode-duration" class="mode-btn active" title="按真实时长比例，压缩空闲间隙">duration</button>
-      <button id="mode-time" class="mode-btn" title="真实墙钟，空闲如实留白">time</button>
-    </div>
-    <input id="search" class="search" type="search" placeholder="搜索（tool 名 / 命令 / 文本）">
-  </header>
-
-  <div id="stats" class="statsbar"></div>
-
-  <div id="timeline" class="timeline" hidden></div>
-
-  <main class="main">
-    <div id="ledger" class="ledger"></div>
-    <div id="detail" class="detail" hidden></div>
-  </main>
-
-  <script type="module" src="/app.js"></script>
+  <div id="root"></div>
+  <script type="module" src="/dist/host.js"></script>
 </body>
 </html>

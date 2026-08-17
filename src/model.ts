@@ -15,6 +15,8 @@ export interface TraceUsage {
   cacheRead: number;
   cacheWrite: number;
   costTotal: number;
+  /** reasoning/thinking tokens（output 的子集，provider 上报时才有）。 */
+  reasoning?: number;
 }
 
 /** 一条轨迹记录 = dsh TrajectoryCellProps 的 pi 版投影。 */
@@ -30,6 +32,8 @@ export interface TraceRecord {
   durationMs: number | null;
   /** 单行摘要（CSS ellipsis）。 */
   text: string;
+  /** 完整正文（user/assistant，8KB 截断；dsh previewMarkdown/outputDetail 用）。 */
+  fullText?: string;
   isError: boolean;
   model?: string;
   provider?: string;
@@ -43,6 +47,31 @@ export interface TraceRecord {
   /** system 记录：system prompt 快照（独立 8KB 截断预算，对齐 dsh promptDetail）。 */
   prompt?: string;
   exitCode?: number;
+  /** assistant：reasoning/thinking 正文（与 text 分离，对齐 dsh thinkingDetail）。 */
+  thinking?: string;
+  /** tool：provider 调用 id（关联 assistant 的 tool-call block，对齐 dsh callId）。 */
+  callId?: string;
+  /** assistant：请求配置（对齐 dsh requestConfig / Options tab）。 */
+  requestConfig?: {
+    provider?: string;
+    model?: string;
+    thinking?: string;
+    reasoningEffort?: string;
+    temperature?: number;
+    maxTokens?: number;
+    stop?: readonly string[];
+  };
+  /** assistant：请求时的 model-visible prompt 快照（对齐 dsh promptDetail）。 */
+  promptSnapshot?: {
+    system: string;
+    tools: Array<{ name: string; description?: string; parameters?: unknown }>;
+  };
+  /** assistant：toolName → schema（对齐 dsh callSchemas / Schema tab）。 */
+  toolSchemas?: Record<string, unknown>;
+  /** assistant：消息里的 tool_call 块（对齐 dsh AssistantBlock tool-call，比从 tool 记录反推更准）。 */
+  toolCalls?: Array<{ callId: string; name: string; argsRaw: string }>;
+  /** user：消息来源（对齐 dsh messageSource / Source tab）。 */
+  source?: unknown;
 }
 
 /** 一个 turn = 一次 LLM 响应 + 其工具调用（DESIGN.md 3.3）。 */

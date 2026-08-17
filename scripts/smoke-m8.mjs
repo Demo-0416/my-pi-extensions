@@ -45,19 +45,63 @@ console.log('reconstructed:', {
 const rStats = computeStats(reconstructed);
 console.log('reconstructed stats:', rStats);
 
-// --- 2. Collector 模拟事件 ---
+// --- 2. Collector 模拟事件（含 M9 新字段）---
 const live = emptySession('live-session-id', sessionFile, '/tmp/project', Date.now());
 const collector = new Collector(live);
-collector.onTurnStart(0, Date.now());
-collector.onBeforeProviderRequest({ model: 'claude-sonnet-4' }, 'claude-sonnet-4', 'anthropic');
-collector.onMessageUpdate(); // 首 token
+collector.onInput({ kind: 'interactive' });
 collector.onMessageEnd({ role: 'user', content: 'hello', timestamp: Date.now() - 5000 });
-collector.onMessageEnd({ role: 'assistant', content: 'hi there', timestamp: Date.now(), provider: 'anthropic', model: 'claude-sonnet-4', usage: { input: 100, output: 20, cacheRead: 80, cacheWrite: 0, cost: { total: 0.005 } }, stopReason: 'stop' });
+collector.onTurnStart(0, Date.now());
+collector.onBeforeProviderRequest(
+  {
+    model: 'claude-sonnet-4',
+    system: 'You are a coding agent.',
+    tools: [{ type: 'function', function: { name: 'bash', description: 'Run a command', parameters: { type: 'object' } } }],
+    temperature: 1,
+  },
+  'claude-sonnet-4',
+  'anthropic',
+);
+collector.onMessageUpdate(); // 首 token
+collector.onMessageEnd({
+  role: 'assistant',
+  content: [
+    { type: 'thinking', thinking: 'reasoning about the task' },
+    { type: 'text', text: 'hi there' },
+    { type: 'toolCall', id: 'call_9', name: 'bash', arguments: { command: 'ls' } },
+  ],
+  timestamp: Date.now(),
+  provider: 'anthropic',
+  model: 'claude-sonnet-4',
+  usage: { input: 100, output: 20, cacheRead: 80, cacheWrite: 0, reasoning: 5, cost: { total: 0.005 } },
+  stopReason: 'toolUse',
+});
 collector.onToolExecutionStart('call_9', 'bash', { command: 'ls' });
 collector.onToolResult('call_9', [{ type: 'text', text: 'out' }], { exitCode: 0 }, false);
 collector.onToolExecutionEnd('call_9', 'done', false);
 collector.onTurnEnd(0);
 console.log('live records:', live.records.map(r => ({ kind: r.kind, turn: r.turn, dur: r.durationMs, ttft: r.ttftMs, exit: r.exitCode })));
+// M9 新字段校验
+const liveAssistant = live.records.find(r => r.kind === 'assistant');
+const liveTool = live.records.find(r => r.kind === 'tool');
+const liveUser = live.records.find(r => r.kind === 'user');
+console.log('M9 fields:', {
+  thinking: liveAssistant?.thinking?.slice(0, 20),
+  toolCalls: liveAssistant?.toolCalls?.length,
+  requestConfig: liveAssistant?.requestConfig?.model,
+  promptSnapshotTools: liveAssistant?.promptSnapshot?.tools?.length,
+  toolSchemas: Object.keys(liveAssistant?.toolSchemas ?? {}).length,
+  reasoning: liveAssistant?.usage?.reasoning,
+  callId: liveTool?.callId,
+  source: liveUser?.source,
+  fullText: liveAssistant?.fullText?.slice(0, 15),
+});
+if (!liveAssistant?.thinking) throw new Error('M9: thinking not captured');
+if (!liveAssistant?.toolCalls?.length) throw new Error('M9: toolCalls not captured');
+if (!liveAssistant?.requestConfig) throw new Error('M9: requestConfig not captured');
+if (!liveAssistant?.promptSnapshot) throw new Error('M9: promptSnapshot not captured');
+if (!liveTool?.callId) throw new Error('M9: callId not captured');
+if (liveAssistant?.usage?.reasoning !== 5) throw new Error('M9: reasoning tokens not captured');
+console.log('M9 fields OK');
 console.log('live stats:', computeStats(live));
 // widget 行（防 theme 作用域类回归：纯函数可单测）
 const widgetParts = widgetLineParts(computeStats(live));
@@ -102,9 +146,10 @@ console.log('GET /api/from-file /etc/passwd:', outside.status, '(expect 403)');
 
 const index = await get('/');
 console.log('GET /:', index.status, index.body.includes('pi-trace') ? 'html ok' : 'html MISSING');
+console.log('GET / (bundle ref):', index.body.includes('/dist/host.js') ? 'bundle ref ok' : 'bundle ref MISSING');
 
-const appjs = await get('/app.js');
-console.log('GET /app.js:', appjs.status, appjs.headers && '');
+const bundle = await get('/dist/host.js');
+console.log('GET /dist/host.js:', bundle.status, bundle.status === 200 ? 'bundle ok' : 'bundle MISSING');
 
 // SSE：收 hello 后退出
 const sseRes = await fetch(`${base}/api/events?session=live-session-id`);

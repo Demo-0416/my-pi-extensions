@@ -1,0 +1,8 @@
+node_modules/
+src/web/node_modules/
+src/web/shots/
+src/web/fixture-session.json
+*.log
+*.map
+.gitignore
+.pi/
