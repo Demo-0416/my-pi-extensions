@@ -155,11 +155,10 @@ export function adaptSession(session: SessionJson): AdapterResult {
 
     if (record.kind === 'system') {
       // system 记录 → 快照，合并进下一个 assistant request。
-      const tools = Array.isArray(record.args)
-        ? (record.args as unknown[]).map((t) => (typeof t === 'string' ? { name: t } : { name: String(t) }))
-        : Array.isArray((record.args as { tools?: unknown } | undefined)?.tools)
-          ? ((record.args as { tools: unknown[] }).tools as unknown[]).map((t) => (typeof t === 'string' ? { name: t } : { name: String(t) }))
-          : []
+      // collector 存的 args.tools 是字符串数组；reconstructed 可能没有。
+      const args = record.args as { tools?: unknown } | undefined
+      const rawTools = Array.isArray(args?.tools) ? args.tools : []
+      const tools = rawTools.map((t) => (typeof t === 'string' ? { name: t } : { name: String(t) }))
       pendingSystemSnapshot = {
         system: record.prompt ?? '',
         tools,

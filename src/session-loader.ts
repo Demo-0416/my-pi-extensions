@@ -79,6 +79,30 @@ function textOf(content: string | ContentBlock[] | undefined): string {
   return parts.join('\n');
 }
 
+function thinkingOf(content: string | ContentBlock[] | undefined): string | undefined {
+  if (!Array.isArray(content)) return undefined;
+  const parts: string[] = [];
+  for (const block of content) {
+    if (block.type === 'thinking' && typeof block.thinking === 'string') parts.push(block.thinking);
+  }
+  return parts.length > 0 ? parts.join('\n') : undefined;
+}
+
+function toolCallsOf(content: string | ContentBlock[] | undefined): Array<{ callId: string; name: string; argsRaw: string }> | undefined {
+  if (!Array.isArray(content)) return undefined;
+  const calls: Array<{ callId: string; name: string; argsRaw: string }> = [];
+  for (const block of content) {
+    if (block.type === 'toolCall' && block.id && block.name) {
+      let argsRaw = '{}';
+      if (block.arguments !== undefined) {
+        try { argsRaw = JSON.stringify(block.arguments); } catch { argsRaw = String(block.arguments); }
+      }
+      calls.push({ callId: block.id, name: block.name, argsRaw });
+    }
+  }
+  return calls.length > 0 ? calls : undefined;
+}
+
 function oneLine(text: string, max = 200): string {
   const collapsed = text.replace(/\s+/g, ' ').trim();
   return collapsed.length > max ? `${collapsed.slice(0, max)}…` : collapsed;
@@ -146,11 +170,13 @@ export function reconstructFromSessionFile(
       const message = entry.message;
       const startedAt = typeof message.timestamp === 'number' ? message.timestamp : Date.parse(entry.timestamp);
       if (message.role === 'user') {
+        const fullText = textOf(message.content);
         const record = push({
           kind: 'user',
           turn: null,
           startedAt,
-          text: oneLine(textOf(message.content)),
+          text: oneLine(fullText),
+          fullText: fullText || undefined,
           isError: false,
         });
         pendingUser.push(record);
@@ -166,11 +192,15 @@ export function reconstructFromSessionFile(
             toolArgsById.set(block.id, block.arguments);
           }
         }
+        const fullText = textOf(message.content);
         push({
           kind: 'assistant',
           turn,
           startedAt,
-          text: oneLine(textOf(message.content)),
+          text: oneLine(fullText),
+          fullText: fullText || undefined,
+          thinking: thinkingOf(message.content),
+          toolCalls: toolCallsOf(message.content),
           isError: message.stopReason === 'error',
           model: message.model,
           provider: message.provider,
@@ -187,6 +217,7 @@ export function reconstructFromSessionFile(
           text: `${message.toolName ?? 'tool'} ${oneLine(JSON.stringify(args ?? {}), 120)}`,
           isError: message.isError === true,
           toolName: message.toolName,
+          callId: message.toolCallId,
           args: truncateField(args),
           result: truncateField(textOf(message.content)),
           exitCode: message.details?.exitCode,
