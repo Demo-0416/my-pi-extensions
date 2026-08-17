@@ -5,7 +5,7 @@
  *   40-75 cols bordered badge box (mascot + identity, skills below)
  *   <40 cols  borderless plain stack
  */
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, Theme } from "@earendil-works/pi-coding-agent";
 import { VERSION } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 
@@ -73,7 +73,7 @@ export class BannerComponent {
 
 	invalidate(): void {}
 
-	render(width: number, theme: ThemeLike): string[] {
+	render(width: number, theme: Theme): string[] {
 		const rows =
 			width < MIN_BOXED_WIDTH
 				? this.renderPlain(width, theme)
@@ -83,19 +83,19 @@ export class BannerComponent {
 		return rows.map((row) => truncateToWidth(row, reveal, ""));
 	}
 
-	private wordmark(theme: ThemeLike): string {
+	private wordmark(theme: Theme): string {
 		const name = `${theme.bold("pi")} ${theme.fg("accent", "✻")}`;
-		return `${name} ${theme.dim(`v${VERSION}`)}`;
+		return `${name} ${theme.fg("dim", `v${VERSION}`)}`;
 	}
 
-	private resumedLine(theme: ThemeLike): string | undefined {
+	private resumedLine(theme: Theme): string | undefined {
 		if (this.info.resumed === undefined) return undefined;
 		const title = this.info.title();
-		const line = theme.dim(`resumed ${this.info.resumed}`);
-		return title === undefined ? line : `${line}${theme.dim(` · ${title}`)}`;
+		const line = theme.fg("dim", `resumed ${this.info.resumed}`);
+		return title === undefined ? line : `${line}${theme.fg("dim", ` · ${title}`)}`;
 	}
 
-	private renderFull(width: number, theme: ThemeLike): string[] | undefined {
+	private renderFull(width: number, theme: Theme): string[] | undefined {
 		if (this.info.skills === undefined) return undefined;
 		const dim = (text: string): string => theme.fg("dim", text);
 		const inner = width - 3;
@@ -165,7 +165,7 @@ export class BannerComponent {
 		return rows;
 	}
 
-	private renderBoxed(width: number, theme: ThemeLike): string[] {
+	private renderBoxed(width: number, theme: Theme): string[] {
 		const model = this.info.model();
 		const resumed = this.resumedLine(theme);
 		const lines = [
@@ -189,7 +189,7 @@ export class BannerComponent {
 		return [...rows, ...this.trailer(width, theme)];
 	}
 
-	private renderPlain(width: number, theme: ThemeLike): string[] {
+	private renderPlain(width: number, theme: Theme): string[] {
 		const usable = Math.max(1, width - 2);
 		const model = this.info.model();
 		const cwd = this.info.cwd;
@@ -204,7 +204,7 @@ export class BannerComponent {
 		return [...lines.map((line) => (line === "" ? "" : ` ${line}`)), ...this.trailer(width, theme)];
 	}
 
-	private trailer(width: number, theme: ThemeLike): string[] {
+	private trailer(width: number, theme: Theme): string[] {
 		const usable = Math.max(1, width - 2);
 		const welcome = this.info.welcome;
 		const names = this.info.skills ?? [];
@@ -225,11 +225,8 @@ export class BannerComponent {
 }
 
 // Minimal structural type for the theme methods the banner uses (pi's Theme).
-interface ThemeLike {
-	fg(token: string, text: string): string;
-	bold(text: string): string;
-	dim(text: string): string;
-}
+// pi's Theme has no dim() method; use fg("dim", ...) instead.
+// (ThemeLike removed — using pi's Theme directly)
 
 export function registerBanner(pi: ExtensionAPI): void {
 	pi.on("session_start", async (event, ctx) => {

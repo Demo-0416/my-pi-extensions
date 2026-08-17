@@ -4,8 +4,12 @@
  * warning) like CC's dim status bar.
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import type { AssistantMessage } from "@earendil-works/pi-ai";
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+
+// Loose type for the assistant message usage we sum (avoids a direct pi-ai dependency).
+interface AssistantUsage {
+	usage: { cost: { total: number } };
+}
 
 function formatTokens(n: number): string {
 	if (n < 1000) return `${n}`;
@@ -20,7 +24,7 @@ export function registerStatusLine(pi: ExtensionAPI): void {
 		let cost = 0;
 		for (const e of ctx.sessionManager.getBranch()) {
 			if (e.type === "message" && e.message.role === "assistant") {
-				cost += (e.message as AssistantMessage).usage.cost.total;
+				cost += (e.message as unknown as AssistantUsage).usage.cost.total;
 			}
 		}
 		pi.on("message_end", async (event) => {
