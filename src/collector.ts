@@ -18,7 +18,7 @@
  */
 import type { TraceRecord, TraceSession, TraceUsage } from './model.ts';
 import { groupRecordsByTurn } from './model.ts';
-import { appendRecord, truncateField } from './store.ts';
+import { appendRecord, truncateField, writeBlob } from './store.ts';
 import { computeStats, type TraceStats } from './stats.ts';
 
 /** SSE 增量事件（DESIGN.md 3.8）。 */
@@ -384,11 +384,12 @@ export class Collector {
       isError: false,
       model: input.model,
       provider: input.provider,
-      // system prompt 独立字段（8KB 截断），args 只放小体积元数据。
+      // system prompt 独立字段（8KB 截断），完整内容存 blob 供前端展开。
       prompt: input.systemPrompt,
       args: {
         systemPromptBytes: promptBytes,
         systemPromptTruncated: promptBytes > 8192,
+        promptBlob: promptBytes > 8192,
         tools: input.selectedTools ?? input.toolSnippets ?? [],
         toolSnippets: input.toolSnippets ?? [],
         cwd: input.cwd,
@@ -396,6 +397,10 @@ export class Collector {
         customPrompt: input.customPrompt,
       },
     };
+    // 完整 prompt 写 blob（不截断），前端按需加载。
+    if (promptBytes > 8192) {
+      writeBlob(this.session.sessionId, record.id, input.systemPrompt);
+    }
     this.session.records.push(record);
     if (this.currentTurn === null) {
       // before_agent_start 先于 turn_start，缓冲到 turn_start 归属。

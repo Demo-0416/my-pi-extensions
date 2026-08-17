@@ -194,5 +194,38 @@ export function scanSidecars(): Array<{
 
 /** 供 server 定位 web 静态资源：扩展 src 目录。 */
 export function extensionSrcDir(): string {
-  return dirname(dirname(fileURLToPath(import.meta.url)));
+  return dirname(fileURLToPath(import.meta.url));
+}
+
+// --- 大字段 blob 存储（system prompt 等超 8KB 的完整内容） --- //
+
+/** blob 存储目录：~/.pi/agent/traces/blobs/<sessionId>/<recordId>.txt */
+export function blobDir(sessionId: string): string {
+  return join(TRACES_DIR, 'blobs', sessionId);
+}
+
+export function blobPath(sessionId: string, recordId: string): string {
+  return join(blobDir(sessionId), `${recordId}.txt`);
+}
+
+/** 写完整大字段（如 system prompt），返回是否写入。 */
+export function writeBlob(sessionId: string, recordId: string, content: string): boolean {
+  try {
+    mkdirSync(blobDir(sessionId), { recursive: true });
+    writeFileSync(blobPath(sessionId, recordId), content, { mode: 0o600 });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** 读完整大字段；不存在返回 null。 */
+export function readBlob(sessionId: string, recordId: string): string | null {
+  try {
+    const path = blobPath(sessionId, recordId);
+    if (!existsSync(path)) return null;
+    return readFileSync(path, 'utf8');
+  } catch {
+    return null;
+  }
 }

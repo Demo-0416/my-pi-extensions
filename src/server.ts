@@ -142,6 +142,23 @@ export class TraceServer {
       return;
     }
 
+    if (pathname === '/api/prompt') {
+      const sessionId = url.searchParams.get('session');
+      const recordId = url.searchParams.get('record');
+      if (!sessionId || !recordId) {
+        sendJson(res, 400, { error: 'missing session or record param' });
+        return;
+      }
+      const content = readBlob(sessionId, recordId);
+      if (content === null) {
+        sendJson(res, 404, { error: 'prompt blob not found' });
+        return;
+      }
+      res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
+      res.end(content);
+      return;
+    }
+
     if (pathname === '/api/from-file') {
       const path = url.searchParams.get('path');
       if (!path) {

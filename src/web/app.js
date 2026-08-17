@@ -123,7 +123,11 @@ function renderDetail(record) {
   } else if (record.kind === 'system') {
     const args = record.args ?? {};
     if (typeof record.prompt === 'string') {
-      sections.push(`<div class="detail-label">system prompt${args.systemPromptTruncated ? `（${formatBytes(args.systemPromptBytes)} → 截断 8KB）` : `（${formatBytes(args.systemPromptBytes)}）`}</div><pre>${escapeHtml(record.prompt)}</pre>`);
+      const truncated = args.systemPromptTruncated && args.promptBlob;
+      sections.push(`<div class="detail-label">system prompt（${formatBytes(args.systemPromptBytes)}${truncated ? ' → 截断 8KB' : ''}）</div><pre id="prompt-pre">${escapeHtml(record.prompt)}</pre>`);
+      if (truncated) {
+        sections.push(`<button class="load-full-prompt" data-record-id="${record.id}">加载完整 system prompt（${formatBytes(args.systemPromptBytes)}）</button>`);
+      }
     }
     if (Array.isArray(args.tools) && args.tools.length > 0) {
       sections.push(`<div class="detail-label">tools（${args.tools.length}）</div><pre>${escapeHtml(args.tools.join('\n'))}</pre>`);
@@ -140,6 +144,28 @@ function renderDetail(record) {
     sections.push(`<pre>${escapeHtml(record.text)}</pre>`);
   }
   el.innerHTML = sections.join('\n');
+  // “加载完整 system prompt”按钮
+  const btn = el.querySelector('.load-full-prompt');
+  if (btn) {
+    btn.addEventListener('click', async () => {
+      const recordId = btn.dataset.recordId;
+      btn.disabled = true;
+      btn.textContent = '加载中…';
+      try {
+        const res = await fetch(`/api/prompt?session=${encodeURIComponent(state.session.sessionId)}&record=${encodeURIComponent(recordId)}`);
+        if (!res.ok) {
+          btn.textContent = `加载失败 (${res.status})`;
+          return;
+        }
+        const full = await res.text();
+        const pre = el.querySelector('#prompt-pre');
+        if (pre) pre.textContent = full;
+        btn.textContent = `已加载完整内容（${formatBytes(full.length)}）`;
+      } catch (e) {
+        btn.textContent = `加载失败: ${e.message}`;
+      }
+    });
+  }
 }
 
 function renderAll() {
