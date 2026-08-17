@@ -9,9 +9,14 @@
  * Only pi public APIs are used; no prototype/monkey patches.
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { registerSpinner } from "./spinner.js";
+import { registerTurnFooter } from "./turn-footer.js";
+import { registerBanner } from "./banner.js";
+import { registerStatusLine } from "./status-line.js";
 
 export default function (pi: ExtensionAPI) {
-	pi.on("session_start", async (_event, ctx) => {
-		if (ctx.hasUI) ctx.ui.notify("better-claude-code-ui loaded", "info");
-	});
+	registerSpinner(pi);
+	registerTurnFooter(pi);
+	registerBanner(pi);
+	registerStatusLine(pi);
 }
