@@ -18,7 +18,7 @@
  */
 import type { TraceRecord, TraceSession, TraceUsage } from './model.ts';
 import { groupRecordsByTurn } from './model.ts';
-import { appendRecord, truncateField, writeBlob } from './store.ts';
+import { truncateField } from './store.ts';
 import { computeStats, type TraceStats } from './stats.ts';
 
 /** SSE 增量事件（DESIGN.md 3.8）。 */
@@ -199,6 +199,8 @@ export class Collector {
   private pendingTurnRecords: TraceRecord[] = [];
   private currentTurn: number | null = null;
   private seq = 0;
+  /** turn 偏移：重建记录的最大 turn + 1，live 事件接续编号。 */
+  private turnOffset = 0;
   /** 最近一次 input 事件的来源（归因到下一条 user 记录）。 */
   private lastInputSource: unknown = null;
 
@@ -208,6 +210,7 @@ export class Collector {
     for (const record of session.records) {
       const match = /-r(\d+)$/.exec(record.id);
       if (match) this.seq = Math.max(this.seq, Number(match[1]) + 1);
+      if (record.turn !== null) this.turnOffset = Math.max(this.turnOffset, record.turn + 1);
     }
   }
 
@@ -250,7 +253,7 @@ export class Collector {
     bucket.startedAt = Math.min(bucket.startedAt, record.startedAt);
   }
 
-  /** 记录闭合：算 durationMs、落 sidecar、广播 upsert。 */
+  /** 记录闭合：算 durationMs、广播 upsert。纯内存，不落盘。 */
   private closeRecord(record: TraceRecord, durationMs: number | null): void {
     record.durationMs = durationMs;
     this.attachToTurn(record);
@@ -260,24 +263,22 @@ export class Collector {
       : this.session.turns.find(t => t.turn === record.turn);
     if (bucket) bucket.endedAt = bucket.endedAt === null ? end : Math.max(bucket.endedAt, end);
     this.session.endedAt = this.session.endedAt === null ? end : Math.max(this.session.endedAt, end);
-    appendRecord(this.session, record);
     this.emit({ type: 'record', record });
   }
 
   // --- 3.3 事件映射 -------------------------------------------------------
 
   onTurnStart(turnIndex: number, timestamp: number): void {
-    this.currentTurn = turnIndex;
+    this.currentTurn = turnIndex + this.turnOffset;
     // user 消息和 system prompt 快照先于 turn_start 到达，归入本 turn。
     for (const record of this.pendingTurnRecords) {
-      record.turn = turnIndex;
+      record.turn = this.currentTurn;
       this.attachToTurn(record);
-      appendRecord(this.session, record);
       this.emit({ type: 'record', record });
     }
     this.pendingTurnRecords = [];
-    if (!this.session.turns.some(t => t.turn === turnIndex)) {
-      this.session.turns.push({ turn: turnIndex, startedAt: timestamp, endedAt: null, records: [] });
+    if (!this.session.turns.some(t => t.turn === this.currentTurn)) {
+      this.session.turns.push({ turn: this.currentTurn, startedAt: timestamp, endedAt: null, records: [] });
       this.session.turns.sort((a, b) => a.turn - b.turn);
     }
   }
@@ -347,11 +348,10 @@ export class Collector {
       this.session.records.push(record);
       this.session.endedAt = record.startedAt;
       if (this.currentTurn === null) {
-        // 等 turn_start 归属后再落盘 + 广播完整记录。
+        // 等 turn_start 归属后再广播完整记录。
         this.pendingTurnRecords.push(record);
       } else {
         this.attachToTurn(record);
-        appendRecord(this.session, record);
         this.emit({ type: 'record', record });
       }
       return;
@@ -478,7 +478,6 @@ export class Collector {
     };
     this.session.records.push(record);
     this.attachToTurn(record);
-    appendRecord(this.session, record);
     this.emit({ type: 'record', record });
   }
 
@@ -496,7 +495,6 @@ export class Collector {
     };
     this.session.records.push(record);
     this.attachToTurn(record);
-    appendRecord(this.session, record);
     this.emit({ type: 'record', record });
   }
 
@@ -539,22 +537,18 @@ export class Collector {
         customPrompt: input.customPrompt,
       },
     };
-    // 完整 prompt 写 blob（不截断），前端按需加载。
-    if (promptBytes > 8192) {
-      writeBlob(this.session.sessionId, record.id, input.systemPrompt);
-    }
+    // system prompt 截断到 8KB 存在记录里（不写 blob 文件）。
     this.session.records.push(record);
     if (this.currentTurn === null) {
       // before_agent_start 先于 turn_start，缓冲到 turn_start 归属。
       this.pendingTurnRecords.push(record);
     } else {
       this.attachToTurn(record);
-      appendRecord(this.session, record);
       this.emit({ type: 'record', record });
     }
   }
 
-  /** 重新分组（sidecar 加载后修正 turn 桶）。 */
+  /** 重新分组（重建后修正 turn 桶）。 */
   regroup(): void {
     this.session.turns = groupRecordsByTurn(this.session.records);
   }

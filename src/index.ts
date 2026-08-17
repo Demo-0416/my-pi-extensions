@@ -70,7 +70,7 @@ export default function (pi: ExtensionAPI): void {
     currentSessionId = sessionId;
     let session: TraceSession | null = null;
     try {
-      // sidecar 存在 = rich；否则从 session JSONL 重建（reconstructed）并落 sidecar。
+      // 从 pi session JSONL 重建（插件不写数据，只读 + 展示）。
       session = loadSession(sessionId, sessionFile || undefined);
     } catch (error) {
       console.error(`[pi-trace] failed to load session ${sessionId}: ${String(error)}`);

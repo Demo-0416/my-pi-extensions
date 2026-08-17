@@ -17,7 +17,7 @@ import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import type { SessionSummary, TraceRecord, TraceSession, TraceUsage } from './model.ts';
 import { groupRecordsByTurn } from './model.ts';
-import { SESSIONS_DIR, readSidecar, scanSidecars, sidecarPath, truncateField } from './store.ts';
+import { SESSIONS_DIR, truncateField } from './store.ts';
 
 // --- session JSONL 最小结构（对齐 docs/session-format.md） ---
 
@@ -271,41 +271,16 @@ export function reconstructFromSessionFile(
   };
 }
 
-/** sidecar → 完整 TraceSession（rich）。 */
-export function sessionFromSidecar(
-  sessionId: string,
-  sessionFile?: string,
-): TraceSession | null {
-  const loaded = readSidecar(sessionId);
-  if (loaded === null) return null;
-  const records = loaded.records;
-  const startedAt = loaded.meta?.startedAt ?? records[0]?.startedAt ?? Date.now();
-  const last = records[records.length - 1];
-  return {
-    sessionId,
-    sessionFile: loaded.meta?.sessionFile ?? sessionFile ?? sidecarPath(sessionId),
-    cwd: loaded.meta?.cwd ?? '',
-    startedAt,
-    endedAt: last ? last.startedAt + (last.durationMs ?? 0) : null,
-    turns: groupRecordsByTurn(records),
-    records,
-    precision: 'rich',
-  };
-}
-
 /**
- * 加载会话：sidecar 优先（rich），否则按 sessionFile 重建（reconstructed）。
- * 都没有则返回 null。
+ * 加载会话：从 pi session JSONL 重建。不读 sidecar（插件不写数据）。
  */
 export function loadSession(sessionId: string, sessionFile?: string): TraceSession | null {
-  const rich = sessionFromSidecar(sessionId, sessionFile);
-  if (rich !== null && rich.records.length > 0) return rich;
   const file = sessionFile ?? findSessionFileById(sessionId);
   if (file) {
     const reconstructed = reconstructFromSessionFile(file, sessionId);
     if (reconstructed !== null) return reconstructed;
   }
-  return rich;
+  return null;
 }
 
 /** 递归收集 sessions 目录下全部 .jsonl 文件。 */
@@ -379,45 +354,10 @@ export function listSessions(liveIds: ReadonlySet<string> = new Set()): SessionS
       cwd: header.cwd ?? '',
       startedAt: Number.isFinite(startedAt) ? startedAt : 0,
       endedAt: null,
-      turnCount: 0,
+      turnCount: countAssistantMessages(file),
       recordCount: 0,
       precision: liveIds.has(header.id) ? 'live' : 'reconstructed',
     });
-  }
-  // sidecar 覆盖：rich 精度 + 记录数。
-  for (const sidecar of scanSidecars()) {
-    const existing = byId.get(sidecar.sessionId);
-    const precision = liveIds.has(sidecar.sessionId) ? 'live' : 'rich';
-    if (existing !== undefined) {
-      existing.precision = precision;
-      existing.recordCount = sidecar.recordCount;
-      if (sidecar.lastStartedAt !== null) existing.endedAt = sidecar.lastStartedAt;
-      if (sidecar.startedAt !== null) existing.startedAt = sidecar.startedAt;
-    } else {
-      byId.set(sidecar.sessionId, {
-        sessionId: sidecar.sessionId,
-        sessionFile: '',
-        cwd: sidecar.cwd ?? '',
-        startedAt: sidecar.startedAt ?? 0,
-        endedAt: sidecar.lastStartedAt,
-        turnCount: 0,
-        recordCount: sidecar.recordCount,
-        precision,
-      });
-    }
-  }
-  // turn 数：rich 会话从 sidecar 记录算；reconstructed 会话从 assistant 消息数算。
-  for (const summary of byId.values()) {
-    if (summary.precision === 'reconstructed' && summary.sessionFile) {
-      summary.turnCount = countAssistantMessages(summary.sessionFile);
-    } else {
-      const loaded = readSidecar(summary.sessionId);
-      const turns = new Set<number>();
-      for (const record of loaded?.records ?? []) {
-        if (record.turn !== null) turns.add(record.turn);
-      }
-      summary.turnCount = turns.size;
-    }
   }
   return [...byId.values()].sort((a, b) => b.startedAt - a.startedAt);
 }

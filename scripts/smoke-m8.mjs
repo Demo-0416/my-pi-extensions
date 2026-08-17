@@ -1,7 +1,7 @@
 /**
  * M8 冒烟测试（不入仓）：
  *   1. 造一个假 session JSONL → reconstructFromSessionFile → 校验记录/turn/统计
- *   2. Collector 模拟一轮 pi 事件 → 校验 rich 记录 + sidecar 落盘
+ *   2. Collector 模拟一轮 pi 事件 → 校验 rich 记录（内存采集，不落盘）
  *   3. TraceServer 起在 127.0.0.1 → 打 /api/sessions、/api/session、/api/from-file、SSE
  */
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
@@ -11,7 +11,7 @@ import { reconstructFromSessionFile } from '../src/session-loader.ts';
 import { emptySession } from '../src/model.ts';
 import { Collector } from '../src/collector.ts';
 import { computeStats, widgetLineParts } from '../src/stats.ts';
-import { readSidecar, TRACES_DIR } from '../src/store.ts';
+import { TRACES_DIR } from '../src/store.ts';
 import { TraceServer } from '../src/server.ts';
 
 const dir = mkdtempSync(join(tmpdir(), 'pi-trace-test-'));
@@ -107,8 +107,9 @@ console.log('live stats:', computeStats(live));
 const widgetParts = widgetLineParts(computeStats(live));
 console.log('widget parts:', widgetParts);
 if (!widgetParts[0].startsWith('✻')) throw new Error('widget line missing ✻ prefix');
-const sidecar = readSidecar('live-session-id');
-console.log('sidecar records:', sidecar?.records.length, 'meta:', sidecar?.meta);
+// 内存记录校验（插件不写 sidecar）
+const liveRecords = live.records;
+console.log('in-memory records:', liveRecords.length, 'meta:', { sessionId: live.sessionId, cwd: live.cwd });
 
 // --- 3. Server ---
 const server = new TraceServer(join(import.meta.dirname, '..', 'src', 'web'));
