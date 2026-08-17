@@ -12,9 +12,10 @@ import { Text } from '@earendil-works/pi-tui';
 import { Collector } from './collector.ts';
 import { emptySession, type TraceSession } from './model.ts';
 import { listSessions, loadSession } from './session-loader.ts';
-import { extensionSrcDir } from './store.ts';
+import { extensionSrcDir, portFilePath } from './store.ts';
 import { computeStats, formatElapsed } from './stats.ts';
 import { join } from 'node:path';
+import { readFileSync } from 'node:fs';
 import { TraceServer } from './server.ts';
 
 let server: TraceServer | null = null;
@@ -176,12 +177,20 @@ export default function (pi: ExtensionAPI): void {
       return null;
     },
     handler: async (args, ctx) => {
-      const port = server?.getPort() ?? 0;
+      // port：优先本进程的 server，其次读 .port 文件（多 pi 进程场景下
+      // 其他进程的 server 也能通过 sidecar 服务本会话）。
+      let port = server?.getPort() ?? 0;
       if (port === 0) {
+        try {
+          port = Number(readFileSync(portFilePath(), 'utf8').trim());
+        } catch { /* ignore */ }
+      }
+      if (port === 0 || !Number.isFinite(port)) {
         ctx.ui.notify('pi-trace server not running', 'error');
         return;
       }
-      let sessionId = currentSessionId;
+      // session ID 从 ctx 实时取，不用模块级变量（重载/多进程下可能过时）。
+      let sessionId = ctx.sessionManager.getSessionId() ?? currentSessionId;
       if (args.trim() === 'pick') {
         const liveIds = new Set(server?.liveSessionIds() ?? []);
         const sessions = listSessions(liveIds);
