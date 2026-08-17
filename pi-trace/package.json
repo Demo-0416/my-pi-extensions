@@ -1,0 +1,49 @@
+{
+  "name": "pi-trace",
+  "version": "0.1.0",
+  "description": "pi extension: deepseek-harness-style trajectory view — timeline gantt, turn-grouped ledger, rich detail panel, live SSE streaming",
+  "keywords": ["pi-package", "pi-extension", "trace", "trajectory", "observability", "deepseek-harness"],
+  "type": "module",
+  "main": "src/index.ts",
+  "license": "MIT",
+  "author": "Demo-0416",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Demo-0416/my-pi-extensions"
+  },
+  "pi": {
+    "extensions": ["./src/index.ts"],
+    "image": "https://raw.githubusercontent.com/Demo-0416/pi-trace/main/docs/screenshot.png"
+  },
+  "files": [
+    "src/index.ts",
+    "src/collector.ts",
+    "src/server.ts",
+    "src/store.ts",
+    "src/model.ts",
+    "src/stats.ts",
+    "src/session-loader.ts",
+    "src/web/dist/",
+    "src/web/index.html",
+    "src/web/theme.css",
+    "src/web/NOTICE.md",
+    "src/web/vendor/",
+    "src/web/primitives/",
+    "src/web/adapter.ts",
+    "src/web/host.tsx",
+    "scripts",
+    "README.md",
+    "LICENSE",
+    "IMPLEMENTATION.md"
+  ],
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*"
+  },
+  "scripts": {
+    "build:web": "cd src/web && npm install && npm run build",
+    "prepublishOnly": "npm run build:web",
+    "test": "node scripts/smoke-m8.mjs",
+    "test:e2e": "cd src/web && node smoke-e2e.mjs"
+  }
+}
