@@ -3,25 +3,27 @@
  *
  * Layout (ported from CC's LogoV2 horizontal mode):
  *   ╭─── pi agent vX.Y.Z ─────────────────────────────╮
- *   │   Welcome back!      │ Tips for getting started  │
- *   │      pi logo         │ tip 1                     │
- *   │   model · cwd        │ What's new                │
+ *   │   Welcome back!      │ Extensions                │
+ *   │      pi logo         │ ext-a, ext-b              │
+ *   │   model · cwd        │ Skills                    │
  *   ╰──────────────────────────────────────────────────╯
  * - Title in the top border (accent wordmark + dim version)
- * - Left panel: welcome (bold), pi P+i logo, model/cwd (dim), centered
- * - Vertical divider, right panel: tips + what's-new feeds
- * - Narrow terminals (<70 cols) fall back to a centered compact box
+ * - Left panel: welcome (bold), pi P+i logo (accent), model/cwd (dim), centered
+ * - Vertical divider, right panel: Extensions + Skills feeds (live from disk)
+ * - Box width adapts to the terminal; <70 cols falls back to a centered compact box
  */
+import { existsSync, readdirSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import type { ExtensionAPI, Theme } from "@earendil-works/pi-coding-agent";
 import { VERSION } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 
-const SKILLS_MAX_ROWS = 4;
+const SKILLS_MAX_ROWS = 6;
 const WIDE_MIN_WIDTH = 70;
 const MAX_LEFT_WIDTH = 50;
 const MIN_LEFT_WIDTH = 20;
 const RIGHT_MIN_WIDTH = 20;
-const BOX_MAX_WIDTH = 100;
 
 // pi brand mark — the geometric P+i logo (pi.dev/logo-auto.svg), 6-row grid.
 const PI_LOGO: readonly string[] = [
@@ -33,17 +35,6 @@ const PI_LOGO: readonly string[] = [
 	"████      ████",
 ];
 
-const TIPS: readonly string[] = [
-	"Run /help to browse commands",
-	"Type @ to reference files",
-	"Use /model to switch models",
-];
-
-const WHATS_NEW: readonly string[] = [
-	"Subagents for parallel work",
-	"Custom themes & extensions",
-];
-
 export interface BannerInfo {
 	model: () => string | undefined;
 	cwd: string;
@@ -51,6 +42,7 @@ export interface BannerInfo {
 	title: () => string | undefined;
 	welcome?: string;
 	skills?: readonly string[];
+	extensions?: readonly string[];
 }
 
 function center(text: string, width: number): string {
@@ -75,12 +67,62 @@ function truncatePath(path: string, maxLen: number): string {
 	const last = parts[parts.length - 1] || "";
 	const candidate = `${first}/…/${last}`;
 	if (visibleWidth(candidate) <= maxLen) return candidate;
-	const lastMax = maxLen - visibleWidth(first) - 4; // "/…/" + trunc
+	const lastMax = maxLen - visibleWidth(first) - 4;
 	if (lastMax > 0) return `${first}/…/${truncateToWidth(last, lastMax, "…")}`;
 	return truncateToWidth(path, maxLen, "…");
 }
 
-function packSkillNames(names: readonly string[], width: number, maxRows = SKILLS_MAX_ROWS): string[] {
+function safeReaddir(dir: string): string[] {
+	try {
+		return readdirSync(dir);
+	} catch {
+		return [];
+	}
+}
+
+/** Discover skill names from user, agent, and package skill directories. */
+function discoverSkills(): string[] {
+	const home = homedir();
+	const names = new Set<string>();
+	const collect = (dir: string): void => {
+		if (!existsSync(dir)) return;
+		for (const entry of safeReaddir(dir)) {
+			if (existsSync(join(dir, entry, "SKILL.md"))) names.add(entry);
+		}
+	};
+	// User + agent skills
+	collect(join(home, ".pi", "agent", "skills"));
+	collect(join(home, ".agents", "skills"));
+	// Package skills: node_modules/<pkg>/skills/<skill>/ and @<scope>/<pkg>/skills/<skill>/
+	const nm = join(home, ".pi", "agent", "npm", "node_modules");
+	if (existsSync(nm)) {
+		for (const pkg of safeReaddir(nm)) {
+			if (pkg.startsWith(".")) continue;
+			const pkgPath = join(nm, pkg);
+			if (pkg.startsWith("@")) {
+				for (const sub of safeReaddir(pkgPath)) {
+					collect(join(pkgPath, sub, "skills"));
+				}
+			} else {
+				collect(join(pkgPath, "skills"));
+			}
+		}
+	}
+	return [...names].sort();
+}
+
+/** Discover extension names from the user extensions directory. */
+function discoverExtensions(): string[] {
+	const dir = join(homedir(), ".pi", "agent", "extensions");
+	if (!existsSync(dir)) return [];
+	return safeReaddir(dir)
+		.filter((f) => f.endsWith(".ts") || f.endsWith(".js"))
+		.map((f) => f.replace(/\.(ts|js)$/, ""))
+		.sort();
+}
+
+/** Pack names into comma-separated rows that fit `width`, with a "+N more" tail. */
+function packNames(names: readonly string[], width: number, maxRows: number): string[] {
 	if (names.length === 0) return [];
 	const joined = (parts: readonly string[]): string => parts.join(", ");
 	const rows: string[] = [];
@@ -145,7 +187,7 @@ export class BannerComponent {
 			Math.max(visibleWidth(welcome), visibleWidth(cwd), visibleWidth(model), MIN_LEFT_WIDTH) + 4,
 			MAX_LEFT_WIDTH,
 		);
-		const boxWidth = Math.min(width, BOX_MAX_WIDTH);
+		const boxWidth = width; // adaptive: full terminal width
 		// 7 = 2 borders + 2 paddingX + 1 divider + 2 gaps
 		const rightWidth = boxWidth - leftWidth - 7;
 		if (rightWidth < RIGHT_MIN_WIDTH) return this.renderCompact(width, theme);
@@ -155,20 +197,29 @@ export class BannerComponent {
 			"",
 			center(bold(welcome), leftWidth),
 			"",
-			...PI_LOGO.map((row) => center(row, leftWidth)),
+			...PI_LOGO.map((row) => center(accent(row), leftWidth)),
 			"",
 			center(dim(model), leftWidth),
 			center(dim(cwd), leftWidth),
 		];
 
-		// Right panel (feeds, accent divider between feeds — matches CC FeedColumn)
-		const rightRows: string[] = [
-			bold(accent("Tips for getting started")),
-			...TIPS.map((t) => truncateToWidth(t, rightWidth, "")),
-			accent("─".repeat(rightWidth)),
-			bold(accent("What's new")),
-			...WHATS_NEW.map((t) => truncateToWidth(t, rightWidth, "")),
-		];
+		// Right panel: Extensions + Skills feeds (live from disk)
+		const rightRows: string[] = [];
+		const exts = this.info.extensions ?? [];
+		const skills = this.info.skills ?? [];
+		if (exts.length > 0) {
+			rightRows.push(bold(accent("Extensions")));
+			for (const line of packNames(exts, rightWidth, 2)) {
+				rightRows.push(truncateToWidth(line, rightWidth, ""));
+			}
+		}
+		if (skills.length > 0) {
+			if (rightRows.length > 0) rightRows.push(accent("─".repeat(rightWidth)));
+			rightRows.push(bold(accent("Skills")));
+			for (const line of packNames(skills, rightWidth, SKILLS_MAX_ROWS)) {
+				rightRows.push(truncateToWidth(line, rightWidth, ""));
+			}
+		}
 
 		const height = Math.max(leftRows.length, rightRows.length);
 		const rows: string[] = [];
@@ -192,7 +243,7 @@ export class BannerComponent {
 
 		// Bottom border
 		rows.push(this.border(theme, `╰${"─".repeat(boxWidth - 2)}╯`));
-		return [...rows, ...this.trailer(width, theme)];
+		return rows;
 	}
 
 	private renderCompact(width: number, theme: Theme): string[] {
@@ -222,26 +273,12 @@ export class BannerComponent {
 		);
 		rows.push(`${this.border(theme, "│")} ${center(bold(welcome), inner)} ${this.border(theme, "│")}`);
 		for (const artRow of PI_LOGO) {
-			rows.push(`${this.border(theme, "│")} ${center(artRow, inner)} ${this.border(theme, "│")}`);
+			rows.push(`${this.border(theme, "│")} ${center(accent(artRow), inner)} ${this.border(theme, "│")}`);
 		}
 		if (model) rows.push(`${this.border(theme, "│")} ${center(dim(model), inner)} ${this.border(theme, "│")}`);
 		rows.push(`${this.border(theme, "│")} ${center(dim(cwd), inner)} ${this.border(theme, "│")}`);
 		rows.push(this.border(theme, `╰${"─".repeat(boxWidth - 2)}╯`));
-		return [...rows, ...this.trailer(width, theme)];
-	}
-
-	private trailer(width: number, theme: Theme): string[] {
-		const usable = Math.max(1, width - 2);
-		const names = this.info.skills ?? [];
-		const lines =
-			names.length === 0
-				? []
-				: [
-						"",
-						theme.bold(theme.fg("dim", "[Skills]")),
-						...packSkillNames(names, usable).map((row) => truncateToWidth(theme.fg("dim", row), usable, "")),
-					];
-		return lines.map((line) => (line === "" ? "" : ` ${line}`));
+		return rows;
 	}
 }
 
@@ -257,6 +294,8 @@ export function registerBanner(pi: ExtensionAPI): void {
 			cwd: ctx.cwd.replace(process.env.HOME ?? "", "~"),
 			resumed,
 			title: () => ctx.sessionManager.getSessionName(),
+			skills: discoverSkills(),
+			extensions: discoverExtensions(),
 		};
 		const banner = new BannerComponent(info);
 		ctx.ui.setHeader((_tui, theme) => ({
