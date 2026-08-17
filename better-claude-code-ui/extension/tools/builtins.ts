@@ -43,6 +43,10 @@ import {
 } from "./grouping.js";
 import { fg, resolvePalette, rgbToHex, type ResolvedPalette } from "../palette.js";
 
+// CC figures.ts: BLACK_CIRCLE = env.platform === 'darwin' ? '⏺' : '●'.
+// Tool call dots, user/assistant message bullets all use this glyph on macOS.
+const BLACK_CIRCLE = process.platform === "darwin" ? "⏺" : "●";
+
 type RenderContext = {
 	state: Record<string, unknown>;
 	lastComponent: unknown;
@@ -87,21 +91,25 @@ function summarizeText(text: string, max = 60): string {
 	return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
 }
 
+// CC ToolUseLoader: color = isUnresolved ? undefined : isError ? 'error' : 'success'.
+// While running (unresolved) the dot is default color, blinking on/off; done = green; error = red.
 function statusDot(ctx: RenderContext, theme: Theme): string {
-	if (ctx.isError) return theme.fg("error", "●");
+	if (ctx.isError) return theme.fg("error", BLACK_CIRCLE);
 	if (ctx.isPartial) {
 		if (ctx.executionStarted) {
 			armBlink();
-			return currentBlinkPhase() ? theme.fg("warning", "●") : " ";
+			return currentBlinkPhase() ? BLACK_CIRCLE : " ";
 		}
-		return theme.fg("dim", "●");
+		return theme.fg("dim", BLACK_CIRCLE);
 	}
-	return theme.fg("success", "●");
+	return theme.fg("success", BLACK_CIRCLE);
 }
 
+// CC AssistantToolUseMessage: <Text bold>{name}</Text> + <Text>({summary})</Text>.
+// Name is bold DEFAULT color (not orange); summary in parens, default color.
 function toolHeader(tool: string, summary: string, theme: Theme, dot: string): string {
-	const label = theme.fg("toolTitle", theme.bold(tool));
-	const body = summary ? `${label} ${theme.fg("accent", summary)}` : label;
+	const label = theme.bold(tool);
+	const body = summary ? `${label}(${summary})` : label;
 	return `${dot} ${body}`;
 }
 

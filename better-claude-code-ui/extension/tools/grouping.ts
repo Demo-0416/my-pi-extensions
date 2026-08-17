@@ -333,15 +333,18 @@ export function getGroupRenderInfo(toolCallId: string, expanded: boolean): Group
 	return { group: g, leader: true, phase: expanded ? "preview" : "collapsed" };
 }
 
+// CC figures.ts: BLACK_CIRCLE = darwin ? '⏺' : '●'.
+const BLACK_CIRCLE = process.platform === "darwin" ? "⏺" : "●";
+
 function statusDot(status: ToolStatus, theme: Theme): string {
 	switch (status) {
 		case "success":
-			return theme.fg("success", "●");
+			return theme.fg("success", BLACK_CIRCLE);
 		case "error":
-			return theme.fg("error", "●");
+			return theme.fg("error", BLACK_CIRCLE);
 		default:
-			// Pending: blink on/off (CC's solid dot that shows or disappears).
-			return blinkPhase ? theme.fg("warning", "●") : " ";
+			// CC ToolUseLoader: while unresolved, default color, blink on/off.
+			return blinkPhase ? BLACK_CIRCLE : " ";
 	}
 }
 
@@ -355,12 +358,14 @@ export function renderCollapsedSummary(
 	const g = info.group;
 	const now = Date.now();
 	const summary = collapsedSummary(g, now);
-	const bullet = g.failed
-		? theme.fg("error", "●")
+	// CC CollapsedReadSearchContent: active = ToolUseLoader (⏺, default, blink);
+// done = empty 2-wide gutter (no dot); error = ⏺ red. Text dim when done, default when active.
+const bullet = g.failed
+		? theme.fg("error", BLACK_CIRCLE)
 		: g.active
-			? theme.fg("accent", "●")
+			? (ensureBlink(), blinkPhase ? BLACK_CIRCLE : " ")
 			: " ";
-	const text = g.active ? theme.bold(summary) : theme.fg("dim", summary);
+	const text = g.active ? summary : theme.fg("dim", summary);
 	const hint = theme.fg("dim", "(ctrl+o to expand)");
 	// In-flight hint: the latest operation's path/pattern/command.
 	const inFlight = g.members.find((m) => m.status === "pending") ?? g.members[g.members.length - 1];
@@ -384,14 +389,15 @@ function branchContinuation(theme: Theme): string {
 	return `${theme.fg("dim", "│")} `;
 }
 
-/** A member's glance line: `├ ● Read(path)` or `└ ● Bash(cmd)`. */
+/** A member's glance line: `├ ⏺ Read(path)` or `└ ⏺ Bash(cmd)` (CC name/summary colors). */
 function glanceLine(m: ToolRecord, index: number, total: number, theme: Theme, displayPath: (p: string) => string): string {
 	const prefix = branchPrefix(index, total, theme);
 	const dot = statusDot(m.status, theme);
 	const label = toolLabel(m.toolName);
 	const summary = toolSummary(m, displayPath);
-	const summaryText = summary ? ` ${theme.fg("accent", summary)}` : "";
-	return `${prefix}${dot} ${theme.fg("toolTitle", theme.bold(label))}${summaryText}`;
+	// CC AssistantToolUseMessage: bold default-color name + (summary) in parens, default color.
+	const summaryText = summary ? `(${summary})` : "";
+	return `${prefix}${dot} ${theme.bold(label)}${summaryText}`;
 }
 
 function toolLabel(name: string): string {

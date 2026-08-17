@@ -41,4 +41,15 @@ export default function (pi: ExtensionAPI) {
 		lines[0] = `∴ ${lines[0]}`;
 		return lines.join("\n");
 	});
+
+	// CC AssistantThinkingMessage: collapsed thinking shows `∴ Thinking` (dim italic).
+	// pi renders hidden thinking as a static label — set it to the CC glyph.
+	pi.on("session_start", async (_event, ctx) => {
+		if (ctx.mode !== "tui") return;
+		try {
+			ctx.ui.setHiddenThinkingLabel?.("∴ Thinking");
+		} catch {
+			/* older pi without setHiddenThinkingLabel */
+		}
+	});
 }

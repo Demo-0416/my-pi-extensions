@@ -345,7 +345,9 @@ export function collapsedSummary(group: CollapsedGroup, now?: number): string {
 		parts.push(phase === "active" ? active : settled);
 	}
 	const text = parts.join(", ");
-	return group.active ? `${text}…` : text;
+	// CC CollapsedReadSearchContent: first fragment capitalized ('Read 3 files, searched for…').
+	const capped = text.length > 0 ? text.charAt(0).toUpperCase() + text.slice(1) : text;
+	return group.active ? `${capped}…` : capped;
 }
 
 /** dsh-tui collapse.ts: formatCollapseHint */
