@@ -1,28 +1,27 @@
 /**
- * Welcome box — ported from dsh-tui's HeaderComponent (itself "in the shape of
- * Claude Code's welcome box"), rebranded to pi ✻. Three width tiers:
- *   ≥76 cols  two-column box (mascot + identity | skills) — needs a skill list
- *   40-75 cols bordered badge box (mascot + identity, skills below)
- *   <40 cols  borderless plain stack
+ * Welcome banner — pi brand mark (the geometric P+i logo from pi.dev) in a
+ * rounded box, with the "pi agent vX.Y.Z" wordmark and a welcome line.
+ * Layout follows CC's boxed welcome; the mark and wordmark are pi's own.
  */
 import type { ExtensionAPI, Theme } from "@earendil-works/pi-coding-agent";
 import { VERSION } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 
 const SKILLS_MAX_ROWS = 4;
-const MIN_BOXED_WIDTH = 40;
-const FULL_MIN_WIDTH = 76;
-const FULL_LEFT_MAX = 44;
-const FULL_RIGHT_MIN = 24;
+const MIN_BOXED_WIDTH = 30;
 
-// CC teardrop-asterisk mark, replacing dsh-tui's whale.
-const ART_SMALL = [" ✻✻✻ ", "✻✻✻✻✻", " ✻✻✻ "] as const;
-const ART_SMALL_WIDTH = 5;
-const ART_LARGE = ["  ✻✻✻  ", "✻✻✻✻✻✻✻", "  ✻✻✻  "] as const;
-const ART_LARGE_WIDTH = 7;
-
-const BOX_INNER_CHROME = 1 + ART_SMALL_WIDTH + 2 + 1;
-const BOX_OVERHEAD = BOX_INNER_CHROME + 3;
+// pi brand mark — the geometric P+i logo (pi.dev/logo-auto.svg), rasterized to
+// a 6-row block grid. Monochrome: renders in the terminal's default fg, which
+// is white on dark terminals and black on light (matching the SVG's
+// prefers-color-scheme swap).
+const PI_LOGO: readonly string[] = [
+	"██████████    ",
+	"████  ████    ",
+	"████  ████    ",
+	"████████  ████",
+	"████      ████",
+	"████      ████",
+];
 
 export interface BannerInfo {
 	model: () => string | undefined;
@@ -74,159 +73,67 @@ export class BannerComponent {
 	invalidate(): void {}
 
 	render(width: number, theme: Theme): string[] {
-		const rows =
-			width < MIN_BOXED_WIDTH
-				? this.renderPlain(width, theme)
-				: (width >= FULL_MIN_WIDTH ? this.renderFull(width, theme) : undefined) ?? this.renderBoxed(width, theme);
+		const rows = width < MIN_BOXED_WIDTH ? this.renderPlain(width, theme) : this.renderBoxed(width, theme);
 		const reveal = this.revealWidth;
 		if (reveal === undefined) return rows;
 		return rows.map((row) => truncateToWidth(row, reveal, ""));
 	}
 
-	private wordmark(theme: Theme): string {
-		const name = `${theme.bold("pi")} ${theme.fg("accent", "✻")}`;
-		return `${name} ${theme.fg("dim", `v${VERSION}`)}`;
-	}
-
-	private resumedLine(theme: Theme): string | undefined {
-		if (this.info.resumed === undefined) return undefined;
-		const title = this.info.title();
-		const line = theme.fg("dim", `resumed ${this.info.resumed}`);
-		return title === undefined ? line : `${line}${theme.fg("dim", ` · ${title}`)}`;
-	}
-
-	private renderFull(width: number, theme: Theme): string[] | undefined {
-		if (this.info.skills === undefined) return undefined;
-		const dim = (text: string): string => theme.fg("dim", text);
-		const inner = width - 3;
-		const model = this.info.model();
-		const resumed = this.resumedLine(theme);
-		const identity = [
-			...(model === undefined ? [] : [model]),
-			this.info.cwd,
-			...(resumed === undefined ? [] : [resumed]),
-		];
-		const welcome = this.info.welcome;
-		const leftWidth = Math.min(
-			Math.max(
-				ART_LARGE_WIDTH + 6,
-				...[...identity, ...(welcome === undefined ? [] : [welcome])].map((line) => visibleWidth(line) + 4),
-			),
-			FULL_LEFT_MAX,
-			inner - FULL_RIGHT_MIN - 1,
-		);
-		const rightWidth = inner - leftWidth - 1;
-		if (leftWidth < ART_LARGE_WIDTH + 2) return undefined;
-		const centered = (text: string): string => {
-			const clipped = truncateToWidth(text, leftWidth - 2, "");
-			const lead = Math.floor((leftWidth - visibleWidth(clipped)) / 2);
-			return `${" ".repeat(lead)}${clipped}`;
-		};
-		const identityLead = " ".repeat(
-			Math.max(
-				1,
-				Math.floor(
-					(leftWidth - Math.min(Math.max(...identity.map((line) => visibleWidth(line))), leftWidth - 2)) / 2,
-				),
-			),
-		);
-		const left = [
-			"",
-			...(welcome === undefined ? [] : [centered(theme.bold(welcome)), ""]),
-			...ART_LARGE.map((row) => centered(theme.fg("accent", row))),
-			"",
-			...identity.map((line) => `${identityLead}${dim(truncateToWidth(line, leftWidth - 2, ""))}`),
-		];
-		const section = (label: string, names: readonly string[]): string[] =>
-			names.length === 0
-				? []
-				: [` ${theme.bold(theme.fg("accent", label))}`, ...packSkillNames(names, rightWidth - 2).map((row) => ` ${dim(row)}`)];
-		const skillsSection = section("[Skills]", this.info.skills);
-		const right = ["", ...skillsSection, ""];
-		const cell = (text: string, cellWidth: number): string => {
-			const clipped = truncateToWidth(text, cellWidth, "");
-			return `${clipped}${" ".repeat(Math.max(0, cellWidth - visibleWidth(clipped)))}`;
-		};
-		const wordmark = this.wordmark(theme);
-		const rule = inner - visibleWidth(wordmark) - 3;
-		const rows = [
-			rule < 1
-				? ` ${dim(`╭${"─".repeat(inner)}╮`)}`
-				: ` ${dim("╭─")} ${wordmark} ${dim(`${"─".repeat(rule)}╮`)}`,
-		];
-		const height = Math.max(left.length, right.length);
-		const drop = Math.floor((height - left.length) / 2);
-		for (let index = 0; index < height; index += 1) {
-			rows.push(
-				` ${dim("│")}${cell(left[index - drop] ?? "", leftWidth)}${dim("│")}${cell(right[index] ?? "", rightWidth)}${dim("│")}`,
-			);
-		}
-		rows.push(` ${dim(`╰${"─".repeat(leftWidth)}┴${"─".repeat(rightWidth)}╯`)}`);
-		return rows;
-	}
-
 	private renderBoxed(width: number, theme: Theme): string[] {
-		const model = this.info.model();
-		const resumed = this.resumedLine(theme);
-		const lines = [
-			this.wordmark(theme),
-			...(model === undefined ? [] : [theme.fg("dim", model)]),
-			theme.fg("dim", this.info.cwd),
-			...(resumed === undefined ? [] : [resumed]),
-		];
-		const textWidth = Math.min(Math.max(...lines.map((line) => visibleWidth(line))), width - BOX_OVERHEAD);
-		const rule = "─".repeat(BOX_INNER_CHROME + textWidth);
-		const rows = [` ${theme.fg("dim", `╭${rule}╮`)}`];
-		for (let index = 0; index < ART_SMALL.length || index < lines.length; index += 1) {
-			const art = ART_SMALL[index] ?? " ".repeat(ART_SMALL_WIDTH);
-			const text = truncateToWidth(lines[index] ?? "", textWidth, "");
-			const pad = " ".repeat(Math.max(0, textWidth - visibleWidth(text)));
-			rows.push(
-				` ${theme.fg("dim", "│")} ${theme.fg("accent", art)}  ${text}${pad} ${theme.fg("dim", "│")}`,
-			);
+		const dim = (text: string): string => theme.fg("dim", text);
+		const wordmark = `${theme.bold("pi agent")} ${dim(`v${VERSION}`)}`;
+		const welcome = dim(this.info.welcome ?? "Welcome to pi!");
+
+		// Compact box: fit the logo + wordmark + welcome only (model/cwd live in
+		// the status line). This keeps the banner tight like CC's welcome.
+		const contentWidth = Math.max(
+			...PI_LOGO.map((row) => visibleWidth(row)),
+			visibleWidth(`pi agent v${VERSION}`),
+			visibleWidth(this.info.welcome ?? "Welcome to pi!"),
+		);
+		const inner = contentWidth + 2;
+		const rule = "─".repeat(inner);
+		const pad = (text: string): string => {
+			const clipped = truncateToWidth(text, contentWidth, "");
+			return `${clipped}${" ".repeat(Math.max(0, contentWidth - visibleWidth(clipped)))}`;
+		};
+
+		const rows: string[] = [` ${dim(`╭${rule}╮`)}`];
+		for (const artRow of PI_LOGO) {
+			rows.push(` ${dim("│")} ${pad(artRow)} ${dim("│")}`);
 		}
-		rows.push(` ${theme.fg("dim", `╰${rule}╯`)}`);
+		rows.push(` ${dim("│")} ${pad(wordmark)} ${dim("│")}`);
+		rows.push(` ${dim("│")} ${pad(welcome)} ${dim("│")}`);
+		rows.push(` ${dim(`╰${rule}╯`)}`);
 		return [...rows, ...this.trailer(width, theme)];
 	}
 
 	private renderPlain(width: number, theme: Theme): string[] {
 		const usable = Math.max(1, width - 2);
+		const dim = (text: string): string => theme.fg("dim", text);
+		const rows: string[] = [...PI_LOGO.map((row) => ` ${row}`.trimEnd())];
+		rows.push(` ${theme.bold("pi agent")} ${dim(`v${VERSION}`)}`);
+		rows.push(` ${dim(this.info.welcome ?? "Welcome to pi!")}`);
 		const model = this.info.model();
-		const cwd = this.info.cwd;
-		const resumed = this.resumedLine(theme);
-		const detail = (text: string): string[] =>
-			wrapTextWithAnsi(theme.fg("dim", text), usable).map((line) => truncateToWidth(line, usable, ""));
-		const lines = [
-			truncateToWidth(this.wordmark(theme), usable, ""),
-			...detail(model === undefined ? cwd : `${model} · ${cwd}`),
-			...(resumed === undefined ? [] : detail(resumed)),
-		];
-		return [...lines.map((line) => (line === "" ? "" : ` ${line}`)), ...this.trailer(width, theme)];
+		if (model !== undefined) rows.push(` ${dim(model)}`);
+		rows.push(` ${dim(this.info.cwd)}`);
+		return [...rows.map((row) => truncateToWidth(row, usable, "")), ...this.trailer(width, theme)];
 	}
 
 	private trailer(width: number, theme: Theme): string[] {
 		const usable = Math.max(1, width - 2);
-		const welcome = this.info.welcome;
 		const names = this.info.skills ?? [];
-		const lines = [
-			...(welcome === undefined
-				? []
-				: wrapTextWithAnsi(theme.fg("dim", welcome), usable).map((line) => truncateToWidth(line, usable, ""))),
-			...(names.length === 0
+		const lines =
+			names.length === 0
 				? []
 				: [
 						"",
 						theme.bold(theme.fg("dim", "[Skills]")),
 						...packSkillNames(names, usable).map((row) => truncateToWidth(theme.fg("dim", row), usable, "")),
-					]),
-		];
+					];
 		return lines.map((line) => (line === "" ? "" : ` ${line}`));
 	}
 }
-
-// Minimal structural type for the theme methods the banner uses (pi's Theme).
-// pi's Theme has no dim() method; use fg("dim", ...) instead.
-// (ThemeLike removed — using pi's Theme directly)
 
 export function registerBanner(pi: ExtensionAPI): void {
 	pi.on("session_start", async (event, ctx) => {
