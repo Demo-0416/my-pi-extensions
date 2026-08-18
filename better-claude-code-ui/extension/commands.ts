@@ -79,6 +79,14 @@ export function isExtraDetail(): boolean {
 }
 
 export function registerCommands(pi: ExtensionAPI): void {
+	// AUDIT §4 / §5:71 (P2 ×11): extraDetail 是持久化的（ccToolsExtraDetail），但
+	// builtins.ts 的模块级 extraDetail 只默认 false、且仅由 setExtraDetail() 改写。
+	// 启动时没人把持久化值回灌给 builtins → 状态栏读 commands.ts 的 extraDetail 说
+	// "on"，实际预览仍按 8 行（off），而第一次 Ctrl+Shift+O 做 setDetail(!extraDetail)
+	// = setDetail(false)，把两边都归到 off，看起来“第一次快捷键空按/反而关掉”。
+	// 在这里一次性同步：让 builtins 的开关与持久化/显示状态一致。
+	setExtraDetail(extraDetail);
+
 	const setDetail = (v: boolean) => {
 		extraDetail = v;
 		setExtraDetail(v);
