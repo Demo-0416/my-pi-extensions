@@ -47,6 +47,7 @@ import {
 	diffLanguage,
 	shikiHighlighter,
 	warmHighlightCache,
+	warmDiffHighlight,
 	setDiffPalette,
 } from "./diff.js";
 import {
@@ -833,7 +834,11 @@ export function registerBuiltins(pi: ExtensionAPI): void {
 			card.diffKey = key;
 			if (old !== content) {
 				c.state._wdk = key;
-				void warmHighlightCache(content, lang, shikiThemeForPalette(palette)).then(() => {
+				// Warm the exact per-side strings the diff renderer will query (both
+				// layouts), not the whole-file content — the old
+				// warmHighlightCache(content, …) warmed a string no renderer looks up,
+				// so the cache always missed and the old side never warmed (AUDIT §5 diff.ts:646).
+				void warmDiffHighlight(diff, { maxLines: expanded ? MAX_RENDER_LINES : MAX_PREVIEW_LINES, language: lang, theme: shikiThemeForPalette(palette) }).then(() => {
 					if (c.state._wdk !== key) return;
 					card.invalidate();
 					c.invalidate();
@@ -904,7 +909,10 @@ export function registerBuiltins(pi: ExtensionAPI): void {
 			card.diffKey = key;
 			if (edits.length > 0) {
 				c.state._edk = key;
-				void warmHighlightCache(newCombined, lang, shikiThemeForPalette(palette)).then(() => {
+				// Warm the per-side strings the renderer queries (AUDIT §5 diff.ts:646);
+				// the old warmHighlightCache(newCombined, …) warmed only the joined new
+				// side under a string no renderer ever looks up.
+				void warmDiffHighlight(diff, { maxLines: expanded ? MAX_RENDER_LINES : MAX_PREVIEW_LINES, language: lang, theme: shikiThemeForPalette(palette) }).then(() => {
 					if (c.state._edk !== key) return;
 					card.invalidate();
 					c.invalidate();

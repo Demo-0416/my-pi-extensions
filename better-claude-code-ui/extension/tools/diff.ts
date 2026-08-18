@@ -661,6 +661,101 @@ function highlightSide(
 	return options.highlight(source.join("\n"), options.language) ?? source;
 }
 
+/** One paired row of the side-by-side layout (module-scoped so warm + render share it). */
+interface SplitRow {
+	left: DiffLine | null;
+	right: DiffLine | null;
+}
+
+/**
+ * The old/new code the unified renderer feeds to the highlighter: ctx+del on
+ * the old side, ctx+add on the new side, in file order. Shared by renderUnified
+ * and warmDiffHighlight so the warmed string is byte-identical to the queried
+ * one — the two used to build the string independently and never matched, so
+ * the cache always missed and the old side was never warmed (AUDIT §5 diff.ts:646).
+ */
+function unifiedSources(visible: readonly DiffLine[]): { old: string[]; new: string[] } {
+	const old: string[] = [];
+	const next: string[] = [];
+	for (const line of visible) {
+		if (line.type === "ctx" || line.type === "del") old.push(line.content);
+		if (line.type === "ctx" || line.type === "add") next.push(line.content);
+	}
+	return { old, new: next };
+}
+
+/** Pair del/add blocks into side-by-side rows (independent of width). */
+function buildSplitRows(lines: readonly DiffLine[]): SplitRow[] {
+	const rows: SplitRow[] = [];
+	let cursor = 0;
+	while (cursor < lines.length) {
+		const line = lines[cursor];
+		if (line === undefined) break;
+		if (line.type === "sep" || line.type === "ctx") {
+			rows.push({ left: line, right: line });
+			cursor += 1;
+			continue;
+		}
+		const removals: DiffLine[] = [];
+		const additions: DiffLine[] = [];
+		while (cursor < lines.length) {
+			const candidate = lines[cursor];
+			if (candidate === undefined || candidate.type !== "del") break;
+			removals.push(candidate);
+			cursor += 1;
+		}
+		while (cursor < lines.length) {
+			const candidate = lines[cursor];
+			if (candidate === undefined || candidate.type !== "add") break;
+			additions.push(candidate);
+			cursor += 1;
+		}
+		for (let pair = 0; pair < Math.max(removals.length, additions.length); pair += 1) {
+			rows.push({ left: removals[pair] ?? null, right: additions[pair] ?? null });
+		}
+	}
+	return rows;
+}
+
+/** The left/right code the split renderer feeds to the highlighter. */
+function splitSources(visible: readonly SplitRow[]): { left: string[]; right: string[] } {
+	const left: string[] = [];
+	const right: string[] = [];
+	for (const row of visible) {
+		if (row.left !== null && row.left.type !== "sep") left.push(row.left.content);
+		if (row.right !== null && row.right.type !== "sep") right.push(row.right.content);
+	}
+	return { left, right };
+}
+
+/**
+ * Warm the highlight cache with the exact per-side join strings both layouts
+ * will later query. renderResult has no terminal width, so it cannot know
+ * whether renderSplit or renderUnified runs; warming both layouts' sources (up
+ * to 4 strings, deduped by the cache key) guarantees a hit either way. This is
+ * the correct replacement for the old `warmHighlightCache(content, …)` call,
+ * which warmed the whole-file string that no renderer ever looks up.
+ */
+export async function warmDiffHighlight(
+	diff: ParsedDiff,
+	options: { maxLines?: number; language: string | undefined; theme?: string },
+): Promise<void> {
+	if (options.language === undefined || diff.chars > MAX_HL_CHARS) return;
+	const theme = options.theme ?? shikiThemeForPalette(activeSgrPalette);
+	const uniMax = options.maxLines ?? MAX_RENDER_LINES;
+	const uni = unifiedSources(diff.lines.slice(0, uniMax));
+	const splitMax = options.maxLines ?? MAX_PREVIEW_LINES;
+	const sp = splitSources(buildSplitRows(diff.lines).slice(0, splitMax));
+	const seen = new Set<string>();
+	const warm: Array<Promise<unknown>> = [];
+	for (const code of [uni.old.join("\n"), uni.new.join("\n"), sp.left.join("\n"), sp.right.join("\n")]) {
+		if (code === "" || seen.has(code)) continue;
+		seen.add(code);
+		warm.push(warmHighlightCache(code, options.language, theme).catch(() => undefined));
+	}
+	await Promise.all(warm);
+}
+
 export function renderUnified(p: ResolvedPalette, diff: ParsedDiff, width: number, options: DiffRenderOptions = {}): string[] {
 	const s = diffSgr(p);
 	if (diff.lines.length === 0) return [];
@@ -675,9 +770,10 @@ export function renderUnified(p: ResolvedPalette, diff: ParsedDiff, width: numbe
 
 	const oldSource: string[] = [];
 	const newSource: string[] = [];
-	for (const line of visible) {
-		if (line.type === "ctx" || line.type === "del") oldSource.push(line.content);
-		if (line.type === "ctx" || line.type === "add") newSource.push(line.content);
+	{
+		const sources = unifiedSources(visible);
+		oldSource.push(...sources.old);
+		newSource.push(...sources.new);
 	}
 	const oldHighlighted = highlightSide(oldSource, options, canHighlight);
 	const newHighlighted = highlightSide(newSource, options, canHighlight);
@@ -788,38 +884,9 @@ export function renderSplit(p: ResolvedPalette, diff: ParsedDiff, width: number,
 	if (!shouldUseSplit(diff, width, max)) return renderUnified(p, diff, width, options);
 	if (diff.lines.length === 0) return [];
 
-	interface Row {
-		left: DiffLine | null;
-		right: DiffLine | null;
-	}
-	const rows: Row[] = [];
-	let cursor = 0;
-	while (cursor < diff.lines.length) {
-		const line = diff.lines[cursor];
-		if (line === undefined) break;
-		if (line.type === "sep" || line.type === "ctx") {
-			rows.push({ left: line, right: line });
-			cursor += 1;
-			continue;
-		}
-		const removals: DiffLine[] = [];
-		const additions: DiffLine[] = [];
-		while (cursor < diff.lines.length) {
-			const candidate = diff.lines[cursor];
-			if (candidate === undefined || candidate.type !== "del") break;
-			removals.push(candidate);
-			cursor += 1;
-		}
-		while (cursor < diff.lines.length) {
-			const candidate = diff.lines[cursor];
-			if (candidate === undefined || candidate.type !== "add") break;
-			additions.push(candidate);
-			cursor += 1;
-		}
-		for (let pair = 0; pair < Math.max(removals.length, additions.length); pair += 1) {
-			rows.push({ left: removals[pair] ?? null, right: additions[pair] ?? null });
-		}
-	}
+	// Shared with warmDiffHighlight so the warmed source is byte-identical to
+	// what highlightSide queries below (AUDIT §5 diff.ts:646).
+	const rows: SplitRow[] = buildSplitRows(diff.lines);
 
 	const visible = rows.slice(0, max);
 	const half = Math.floor((width - 1) / 2);
@@ -828,12 +895,7 @@ export function renderSplit(p: ResolvedPalette, diff: ParsedDiff, width: number,
 	const wrapRows = adaptiveWrapRows(width);
 	const canHighlight = diff.chars <= MAX_HL_CHARS;
 
-	const leftSource: string[] = [];
-	const rightSource: string[] = [];
-	for (const row of visible) {
-		if (row.left !== null && row.left.type !== "sep") leftSource.push(row.left.content);
-		if (row.right !== null && row.right.type !== "sep") rightSource.push(row.right.content);
-	}
+	const { left: leftSource, right: rightSource } = splitSources(visible);
 	const leftHighlighted = highlightSide(leftSource, options, canHighlight);
 	const rightHighlighted = highlightSide(rightSource, options, canHighlight);
 
