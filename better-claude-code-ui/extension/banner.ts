@@ -71,18 +71,29 @@ function padRight(text: string, width: number): string {
 	return text + " ".repeat(width - w);
 }
 
-/** Middle-truncate a path: keep first/…/last so the useful tail survives. */
-function truncatePath(path: string, maxLen: number): string {
+/** Middle-truncate a path: keep first/…/last so the useful tail survives.
+ * Mirrors CC logoV2Utils.ts:175 `<first>/…/<last>` — an absolute path keeps a
+ * single leading `/` (first === "", not `//`), and a trailing slash is dropped
+ * so `last` stays the real tail segment instead of "" (AUDIT §5 banner.ts:79). */
+export function truncatePath(path: string, maxLen: number): string {
 	if (visibleWidth(path) <= maxLen) return path;
-	const parts = path.split("/");
-	if (parts.length <= 1) return truncateToWidth(path, maxLen, "…");
-	const first = parts[0] || "/";
+	const sep = "/";
+	const ellipsis = "…";
+	// Drop trailing separators so `last` is the real tail, not "" → `…/`.
+	const trimmed = path.length > 1 ? path.replace(/\/+$/, "") : path;
+	const parts = trimmed.split(sep);
+	if (parts.length <= 1) return truncateToWidth(trimmed, maxLen, ellipsis);
+	const first = parts[0]; // "" when the path is absolute (leading slash)
 	const last = parts[parts.length - 1] || "";
-	const candidate = `${first}/…/${last}`;
+	// `<first>/…/<last>`; for an absolute path first is "" so this is `/…/last`
+	// (one leading slash), and for `~/a/b` it is `~/…/b`.
+	const candidate = `${first}${sep}${ellipsis}${sep}${last}`;
 	if (visibleWidth(candidate) <= maxLen) return candidate;
-	const lastMax = maxLen - visibleWidth(first) - 4;
-	if (lastMax > 0) return `${first}/…/${truncateToWidth(last, lastMax, "…")}`;
-	return truncateToWidth(path, maxLen, "…");
+	// Not enough room even for that: keep the head + a truncated tail.
+	const head = `${first}${sep}${ellipsis}${sep}`;
+	const lastMax = maxLen - visibleWidth(head);
+	if (lastMax > 0) return `${head}${truncateToWidth(last, lastMax, ellipsis)}`;
+	return truncateToWidth(trimmed, maxLen, ellipsis);
 }
 
 function safeReaddir(dir: string): string[] {
