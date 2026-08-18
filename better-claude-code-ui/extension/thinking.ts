@@ -4,15 +4,31 @@
  * src/components/Spinner/SpinnerAnimationRow.tsx.
  *
  * Three behaviors:
- *   1. markdown transformer: every non-empty thinking block gets a
- *      `∴ Thinking…` dim italic title line (CC's expanded shape). The body
- *      keeps pi's built-in thinkingText styling.
- *   2. hidden thinking label: a CONSTANT `∴ Thinking` collapsed line. pi's
+ *   1. markdown transformer: when pi renders the thinking body (expanded mode,
+ *      hideThinkingBlock=false), every non-empty run of blocks gets a
+ *      `∴ Thinking…` dim italic title line (CC's EXPANDED shape,
+ *      AssistantThinkingMessage.tsx:62). The body keeps pi's thinkingText.
+ *   2. hidden thinking label: the CC COLLAPSED line
+ *      `∴ Thinking (ctrl+t to expand)` — a CONSTANT. pi's
  *      setHiddenThinkingLabel is a GLOBAL label — it rewrites every history
  *      AssistantMessageComponent in chatContainer + the streaming one
  *      (interactive-mode.js:1655-1666), so it must NOT carry per-block data.
  *   3. working message: while a thinking block is active the spinner row
  *      shows dim `(thinking)` — CC's SpinnerAnimationRow thinkingText.
+ *
+ * Default-collapse (AUDIT §6 P1 / §3-1): CC defaults thinking to a single
+ * collapsed line `∴ Thinking (ctrl+o to expand)`; pi renders the body in full
+ * whenever its OWN hideThinkingBlock setting is false. That default lives in
+ * pi's agent settings.json and is read at InteractiveMode construction
+ * (interactive-mode.js:389), BEFORE any extension session_start — and the
+ * extension API exposes no setter for it. So the collapse DEFAULT cannot be
+ * flipped from here; the user sets it once via ctrl+t (persisted) or in
+ * settings.json (hideThinkingBlock: true — the shipped config already does).
+ * What this file CAN own is the exact collapsed-line TEXT, which pi surfaces
+ * through the global hidden label. CC's literal key is ctrl+o; pi's thinking
+ * expand key is ctrl+t (app.thinking.toggle, keybindings.js:28 — ctrl+o is
+ * tool output in pi), so the hint names ctrl+t. The key text is hardcoded to
+ * the default; a user rebind makes it stale (AUDIT §6 P3, shared gap).
  *
  * pi API limits (see ALIGNMENT.md §13): no per-block toggle, no body
  * indentation (markdown would treat leading spaces as code), no shimmer
@@ -31,7 +47,10 @@ import { dim, italic } from "./palette.js";
 import { currentWorkingVerb } from "./spinner.js";
 
 const THINKING_TITLE = "∴ Thinking…";
-const HIDDEN_LABEL_THINKING = "∴ Thinking";
+// CC AssistantThinkingMessage.tsx:44 collapsed line. CC's literal is
+// `(ctrl+o to expand)`; pi's thinking expand key is ctrl+t (keybindings.js:28),
+// so name the key that actually works in pi.
+const HIDDEN_LABEL_THINKING = "∴ Thinking (ctrl+t to expand)";
 
 /** CC effort.ts:188-196 — the spinner row names the active thinking level. */
 function thinkingText(level: string | undefined): string {
