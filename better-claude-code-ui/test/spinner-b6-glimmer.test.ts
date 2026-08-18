@@ -42,5 +42,6 @@ test("随时间从右向左扫：shimmer 段的列位随 timeMs 增大而左移"
 test("glimmer 不改变可见文本，只改变着色", () => {
 	const paint: SpinnerPaint = { accent: (s) => s, shimmer: (s) => s, dim: (s) => s };
 	const line = buildSpinnerLine({ verb: "Cooking", timeMs: 350, columns: 80 }, paint);
-	assert.ok(line.endsWith("Cooking…"), `可见文本应完整：${line}`);
+	// 行尾如今接 dim byline（(0s · esc to interrupt)）,verb 段本身必须完整。
+	assert.ok(line.includes("Cooking…"), `可见文本应完整：${line}`);
 });

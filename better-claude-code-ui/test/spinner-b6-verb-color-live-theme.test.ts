@@ -30,8 +30,9 @@ test("§6：glyph 和 verb 都用 accent（claude 橙）上色，绝不用 dim/m
 	assert.ok(log.some((c) => c.role === "accent" && c.text.includes("Cooking…")), "verb 用 accent");
 	// glyph（第一帧 ·）也被 accent 上色。
 	assert.ok(log.some((c) => c.role === "accent" && c.text === "·"), "glyph 用 accent");
-	// 整行里没有任何 dim 段（基础态不 dim verb）。
-	assert.ok(!log.some((c) => c.role === "dim"), "基础态不 dim");
+	// glyph/verb 都不走 dim——dim 只允许出现在 byline 括号段上。
+	assert.ok(!log.some((c) => c.role === "dim" && c.text.includes("Cooking")), "verb 不 dim");
+	assert.ok(!log.some((c) => c.role === "dim" && c.text === "·"), "glyph 不 dim");
 	assert.match(line, /A\(Cooking…\)/);
 });
 
