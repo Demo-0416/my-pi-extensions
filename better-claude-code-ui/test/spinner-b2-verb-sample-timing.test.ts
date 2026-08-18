@@ -13,12 +13,16 @@ import assert from "node:assert/strict";
 import { FakePi, loadExtension } from "./harness.js";
 import { currentWorkingVerb } from "../extension/spinner.js";
 
-test("agent_start 立即把当前采样的动词写进 working message", async () => {
+test("agent_start 立即把当前采样的动词画进 working message", async () => {
 	const pi = new FakePi();
 	await loadExtension(pi);
 	await pi.emit("agent_start");
-	// agent_start 之后展示的动词就是当前采样值——不是"上一轮"的。
-	assert.equal(pi.ui.workingMessage, `${currentWorkingVerb()}…`);
+	// agent_start 之后画出来的行里含当前采样动词——不是"上一轮"的。
+	// （FakeTheme.fg 是恒等函数，所以 verb 原样出现在渲染行里。）
+	assert.ok(
+		typeof pi.ui.workingMessage === "string" && pi.ui.workingMessage.includes(`${currentWorkingVerb()}…`),
+		`working message 应含当前动词，实际=${pi.ui.workingMessage}`,
+	);
 });
 
 test("turn_start 不重新采样：一次请求内动词稳定不跳", async () => {

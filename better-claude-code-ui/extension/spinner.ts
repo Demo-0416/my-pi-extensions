@@ -1,9 +1,23 @@
 /**
- * CC spinner: teardrop-asterisk frames (forward + reverse) at 170ms, with the
- * full Claude Code fun-verb list sampled once per turn. Public pi APIs only
- * (ctx.ui.setWorkingIndicator / setWorkingMessage) — no Loader prototype patch.
+ * CC spinner status row, reproduced on pi's public APIs.
+ *
+ * CC's SpinnerAnimationRow (SpinnerAnimationRow.tsx) is a 20fps self-drawn row:
+ * useAnimationFrame(50) drives the glyph frame (120ms), a glimmer sweep, the
+ * elapsed-time + token byline (after 30s), and a thinking append. pi's built-in
+ * Loader can do none of that — it bakes the glyph color once at
+ * setWorkingIndicator time (AUDIT §5 spinner.ts:74 burn-in) and forces the verb
+ * through messageColorFn = theme.fg("muted") (AUDIT §6: the verb should be
+ * claude brand orange, not muted gray).
+ *
+ * So we do what the audit's feasibility note prescribes: hide the built-in
+ * indicator with `frames: []` (pi loader.js:44,51 — empty frames ⇒ no glyph and
+ * no internal timer) and repaint the whole line ourselves on a 50ms interval via
+ * setWorkingMessage (pi interactive-mode.js:1878-1883 → StatusIndicator.setMessage
+ * → Loader.updateDisplay → ui.requestRender, loader.js:38-41,59-67). Because the
+ * line is rebuilt each tick from the live theme, a mid-session theme switch is
+ * picked up immediately (no burn-in) and we own every color span.
  */
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, Theme } from "@earendil-works/pi-coding-agent";
 
 // CC Spinner/utils.ts getDefaultCharacters(): Ghostty renders ✽ slightly offset,
 // so the last frame is * there.
@@ -15,8 +29,10 @@ function defaultCharacters(): string[] {
 const FRAMES = defaultCharacters();
 // Forward then reverse — CC's SpinnerAnimationRow plays the loop ping-pong.
 const SPINNER = [...FRAMES, ...[...FRAMES].reverse()];
-// CC Spinner: 120ms per frame.
-const INTERVAL_MS = 120;
+// CC SpinnerAnimationRow.tsx:133 — frame = Math.floor(time / 120).
+const FRAME_MS = 120;
+// CC useAnimationFrame(50): the whole row is repainted at 20fps.
+const TICK_MS = 50;
 
 // claude-code-main/src/constants/spinnerVerbs.ts — SPINNER_VERBS, full list.
 const VERBS = [
@@ -65,16 +81,80 @@ export function currentWorkingVerb(): string {
 
 let verb = sampleVerb();
 
+// ---------------------------------------------------------------------------
+// Pure frame builder (tested in isolation)
+// ---------------------------------------------------------------------------
+
+/** Color functions for one frame — resolved from the *live* theme each tick. */
+export interface SpinnerPaint {
+	/** claude brand orange (CC messageColor 'claude'). */
+	accent: (s: string) => string;
+	/** claude shimmer (CC shimmerColor 'claudeShimmer'). */
+	shimmer: (s: string) => string;
+	/** CC's dimColor. */
+	dim: (s: string) => string;
+}
+
+export interface SpinnerFrameState {
+	verb: string;
+	/** Milliseconds since the request (agent loop) started. */
+	timeMs: number;
+	columns: number;
+}
+
+/**
+ * Build one spinner line: `<glyph> <verb…>`. Pure — takes the animation clock
+ * and color functions, returns an ANSI string. Mirrors SpinnerAnimationRow's
+ * derivations for a single (non-teammate) agent. Glyph and verb are painted in
+ * the accent (claude brand) color every tick — no gray verb (AUDIT §6), no
+ * baked-in frame color (AUDIT §5 spinner.ts:74).
+ */
+export function buildSpinnerLine(state: SpinnerFrameState, paint: SpinnerPaint): string {
+	const message = `${state.verb}…`;
+	const frame = Math.floor(state.timeMs / FRAME_MS) % SPINNER.length;
+	const glyph = paint.accent(SPINNER[frame] ?? "✻");
+	return `${glyph} ${paint.accent(message)}`;
+}
+
+// ---------------------------------------------------------------------------
+// Registration + the 50ms repaint loop
+// ---------------------------------------------------------------------------
+
 export function registerSpinner(pi: ExtensionAPI): void {
+	let animStartMs = 0;
+	let timer: ReturnType<typeof setInterval> | null = null;
+
+	function paintFor(theme: Theme): SpinnerPaint {
+		return {
+			// accent → claude; customMessageLabel → claudeShimmer (theme JSON).
+			accent: (s) => theme.fg("accent", s),
+			shimmer: (s) => theme.fg("customMessageLabel", s),
+			dim: (s) => theme.fg("dim", s),
+		};
+	}
+
+	function repaint(ctx: { hasUI: boolean; ui: { theme: Theme; setWorkingMessage(m?: string): void } }): void {
+		if (!ctx.hasUI) return;
+		const line = buildSpinnerLine(
+			{ verb, timeMs: Date.now() - animStartMs, columns: process.stdout.columns ?? 80 },
+			paintFor(ctx.ui.theme),
+		);
+		ctx.ui.setWorkingMessage(line);
+	}
+
+	function stopLoop(): void {
+		if (timer) {
+			clearInterval(timer);
+			timer = null;
+		}
+	}
 
 	pi.on("session_start", async (_event, ctx) => {
 		if (!ctx.hasUI) return;
-		// Frames are pre-colored with the accent (CC brand) color; pi renders them
-		// verbatim, so the SGR must be inside the frame strings.
-		ctx.ui.setWorkingIndicator({
-			frames: SPINNER.map((ch) => ctx.ui.theme.fg("accent", ch)),
-			intervalMs: INTERVAL_MS,
-		});
+		// Hide pi's built-in glyph and its internal timer (loader.js:44,51). We
+		// paint the glyph into the message ourselves so its color tracks the live
+		// theme every tick (fixes AUDIT §5 spinner.ts:74 burn-in).
+		ctx.ui.setWorkingIndicator({ frames: [] });
 		// CC convention: terminal title is `✻ <cwd>`.
 		try {
 			ctx.ui.setTitle(`✻ ${ctx.cwd}`);
@@ -83,20 +163,21 @@ export function registerSpinner(pi: ExtensionAPI): void {
 		}
 	});
 
-	// Sample once per request, at agent_start — matching CC's mount-time
-	// useState(() => sample(getSpinnerVerbs())) (CC Spinner.tsx:204). The verb
-	// must be picked *before* the first working message is shown; the old code
-	// sampled at turn_start, which fires *after* agent_start, so agent_start
-	// always displayed the previous request's verb (AUDIT §5 spinner.ts:87).
-	// A pi `turn` is one loop iteration, not one request (AUDIT §3-2), so a
-	// per-turn resample would also make the verb jump mid-request — CC keeps it
-	// stable for the whole request.
+	// Sample the verb once per request, at agent_start (AUDIT §5 spinner.ts:87 /
+	// §3-2), matching CC's mount-time useState(() => sample(...)) (Spinner.tsx:204).
 	pi.on("agent_start", async (_event, ctx) => {
 		verb = sampleVerb();
-		if (ctx.hasUI) ctx.ui.setWorkingMessage(`${verb}…`);
+		animStartMs = Date.now();
+		if (!ctx.hasUI) return;
+		repaint(ctx); // first frame synchronously, no blank tick
+		stopLoop();
+		timer = setInterval(() => repaint(ctx), TICK_MS);
+		// Don't keep the event loop (or test process) alive on the spinner alone.
+		timer.unref?.();
 	});
 
 	pi.on("agent_settled", async (_event, ctx) => {
+		stopLoop();
 		if (ctx.hasUI) ctx.ui.setWorkingMessage();
 	});
 }
