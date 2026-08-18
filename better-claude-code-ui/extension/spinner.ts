@@ -33,6 +33,8 @@ const SPINNER = [...FRAMES, ...[...FRAMES].reverse()];
 const FRAME_MS = 120;
 // CC useAnimationFrame(50): the whole row is repainted at 20fps.
 const TICK_MS = 50;
+// CC SpinnerAnimationRow.tsx:135 — non-requesting glimmer cadence.
+const GLIMMER_MS = 200;
 
 // claude-code-main/src/constants/spinnerVerbs.ts — SPINNER_VERBS, full list.
 const VERBS = [
@@ -102,18 +104,61 @@ export interface SpinnerFrameState {
 	columns: number;
 }
 
+/** Visible width of a plain (ANSI-free) verb/label — spinner text is width-1 per code point. */
+function plainWidth(s: string): number {
+	return [...s].length;
+}
+
+/**
+ * The glimmer-swept verb. CC GlimmerMessage.tsx:103-141 — chars within ±1 of
+ * `glimmerIndex` (a visual column that sweeps right→left) get the shimmer color,
+ * the rest get the base (accent) color. When the sweep is offscreen the whole
+ * message renders in the base color.
+ */
+export function glimmerMessage(message: string, glimmerIndex: number, paint: SpinnerPaint): string {
+	const chars = [...message];
+	const messageWidth = chars.length;
+	const shimmerStart = glimmerIndex - 1;
+	const shimmerEnd = glimmerIndex + 1;
+	if (shimmerStart >= messageWidth || shimmerEnd < 0) return paint.accent(message);
+
+	const clampedStart = Math.max(0, shimmerStart);
+	let before = "";
+	let shim = "";
+	let after = "";
+	let col = 0;
+	for (const ch of chars) {
+		if (col + 1 <= clampedStart) before += ch;
+		else if (col > shimmerEnd) after += ch;
+		else shim += ch;
+		col += 1;
+	}
+	return (before ? paint.accent(before) : "") + (shim ? paint.shimmer(shim) : "") + (after ? paint.accent(after) : "");
+}
+
 /**
  * Build one spinner line: `<glyph> <verb…>`. Pure — takes the animation clock
  * and color functions, returns an ANSI string. Mirrors SpinnerAnimationRow's
  * derivations for a single (non-teammate) agent. Glyph and verb are painted in
  * the accent (claude brand) color every tick — no gray verb (AUDIT §6), no
- * baked-in frame color (AUDIT §5 spinner.ts:74).
+ * baked-in frame color (AUDIT §5 spinner.ts:74) — with a glimmer sweep across
+ * the verb (AUDIT §6, CC's most recognizable spinner effect).
  */
 export function buildSpinnerLine(state: SpinnerFrameState, paint: SpinnerPaint): string {
 	const message = `${state.verb}…`;
+	const messageWidth = plainWidth(message);
 	const frame = Math.floor(state.timeMs / FRAME_MS) % SPINNER.length;
 	const glyph = paint.accent(SPINNER[frame] ?? "✻");
-	return `${glyph} ${paint.accent(message)}`;
+
+	// Glimmer sweep — CC SpinnerAnimationRow.tsx:139-147 (non-requesting branch):
+	// glimmerIndex = messageWidth + 10 - (cyclePosition % cycleLength), sweeping
+	// right→left across the verb, then off the left edge and back.
+	const cycleLength = messageWidth + 20;
+	const cyclePosition = Math.floor(state.timeMs / GLIMMER_MS);
+	const glimmerIndex = messageWidth + 10 - (cyclePosition % cycleLength);
+	const verbSpan = glimmerMessage(message, glimmerIndex, paint);
+
+	return `${glyph} ${verbSpan}`;
 }
 
 // ---------------------------------------------------------------------------
