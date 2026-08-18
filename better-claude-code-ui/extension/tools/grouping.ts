@@ -154,13 +154,23 @@ function settleLeakedGroups(): void {
 	for (const g of groups) {
 		for (const m of g.members) {
 			if (m.status === "pending") {
-				m.status = "success";
+				// AUDIT §5:157 — a still-pending member here means its
+				// tool_execution_end was never observed (the run died abnormally:
+				// crash / kill, no agent_end path). Clean Esc-interrupts are NOT this
+				// case — the agent loop emits tool_execution_end{isError:true} with an
+				// "Operation aborted" result (pi-agent-core agent-loop.js:414-436), so
+				// they already settle as "error" via tool_execution_end and never reach
+				// here. An unobserved-completion tool is not a confirmed success, so mark
+				// it "error" (red/interrupted) rather than painting a false green dot.
+				m.status = "error";
+				m.isError = true;
 				changed = true;
 			}
 		}
 		if (g.active) {
 			g.running = false;
 			g.active = false;
+			g.failed = g.members.some((m) => m.isError);
 			changed = true;
 		}
 		clearHintTimer(g.hintState);
