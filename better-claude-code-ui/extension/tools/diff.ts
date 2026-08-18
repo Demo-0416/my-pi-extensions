@@ -147,6 +147,7 @@ function ansiState(text: string): string {
 	let foreground = "";
 	let background = "";
 	let bold = false;
+	let dim = false;
 	let italic = false;
 	for (const sequence of matches) {
 		const params = sequence.slice(2, -1);
@@ -154,6 +155,7 @@ function ansiState(text: string): string {
 			foreground = "";
 			background = "";
 			bold = false;
+			dim = false;
 			italic = false;
 		} else if (params === "39") {
 			foreground = "";
@@ -161,8 +163,12 @@ function ansiState(text: string): string {
 			background = "";
 		} else if (params === "1") {
 			bold = true;
+		} else if (params === "2") {
+			dim = true;
 		} else if (params === "22") {
+			// SGR 22 = normal intensity: clears BOTH bold (1) and dim (2).
 			bold = false;
+			dim = false;
 		} else if (params === "3") {
 			italic = true;
 		} else if (params === "23") {
@@ -173,9 +179,10 @@ function ansiState(text: string): string {
 			background = sequence;
 		}
 	}
-	// Replay bold/italic too — shiki emits them (code-to-ansi:52-55) and wrapped
-	// continuation rows would otherwise lose the style past the first line.
-	return background + foreground + (bold ? "\x1b[1m" : "") + (italic ? "\x1b[3m" : "");
+	// Replay bold/dim/italic too — shiki emits them (code-to-ansi:52-55) and diff
+	// ctx rows are wrapped inside a `\x1b[2m` (D_DIM) span; without replaying dim,
+	// a ctx line's second wrapped row would lose the dimming (AUDIT §5 diff.ts:182).
+	return background + foreground + (bold ? "\x1b[1m" : "") + (dim ? "\x1b[2m" : "") + (italic ? "\x1b[3m" : "");
 }
 
 function normalizeShikiContrast(s: DiffSgr, ansi: string): string {
