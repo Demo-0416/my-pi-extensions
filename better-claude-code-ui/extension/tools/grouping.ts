@@ -87,6 +87,20 @@ function clearHintTimer(st: HintState): void {
 let tools = new Map<string, ToolRecord>();
 let turnToolOrder: string[] = [];
 let groups: GroupInfo[] = [];
+// AUDIT §5:399 — settled groups from PAST turns, kept so a global Ctrl+O
+// re-render (pi setToolsExpanded re-renders every historical tool component)
+// still resolves each member's group. Without this, turn_start cleared `groups`,
+// so groupOf() returned undefined for old turns → hidden members drew their own
+// standalone rows and leaders lost their summary: the whole collapsed group
+// "exploded" into loose lines and could never collapse back. These are LIGHT
+// shells: member results are stripped (result=undefined) so nothing accumulates
+// across the session (preserves the B0 OOM guard `tools = new Map()`); the
+// scalar counts + args are enough to redraw the settled summary and glance lines.
+let archivedGroups: GroupInfo[] = [];
+// Hard cap on archived groups so a very long session can't grow unbounded even
+// with stripped results. Oldest evicted first; evicted turns fall back to pi's
+// own rendering (no explosion is still avoided for the most recent ~all turns).
+const MAX_ARCHIVED_GROUPS = 500;
 let nextGroupId = 1;
 let pendingThinkingMs = 0;
 let thinkingOpenSince: number | undefined;
@@ -103,6 +117,14 @@ let activeSession = false;
 // same tick drives their blink (CC useBlink: every pending dot blinks, not
 // just group leaders). Keyed by toolCallId; dropped on tool_execution_end.
 const standaloneBlinkers = new Map<string, () => void>();
+// AUDIT §5:493 — the latest render invalidate for EVERY tool this turn, keyed by
+// toolCallId, captured on every renderCall/renderResult (before any early
+// return). When a later member joins and forms a group whose leader already
+// settled (rendered its standalone row, no reason to re-render itself), the
+// freshly-built group's invalidator is undefined, so invalidateGroups() could
+// not refresh the leader — the group showed only the leader's stale row with the
+// new members hidden. This lets invalidateGroups() promote a settled leader.
+const toolInvalidators = new Map<string, () => void>();
 
 // Blink watchdog (ported from pi-claude-code-ui extensions/index.ts:2656-2783):
 // one global timer blinks all active groups; four safeguards keep it honest.
@@ -132,7 +154,9 @@ function reset(): void {
 	turnToolOrder = [];
 	clearAllHintTimers();
 	groups = [];
+	archivedGroups = [];
 	standaloneBlinkers.clear();
+	toolInvalidators.clear();
 	blinkBudgetGroups = new Set();
 	blinkBudgetStandalone = new Set();
 	pendingThinkingMs = 0;
@@ -260,12 +284,14 @@ function buildGroup(members: ToolRecord[], id: number): GroupInfo {
 		if (m.status === "pending") running = true;
 		if (m.isError) failed = true;
 		if (m.startedAt > lastActiveAt) lastActiveAt = m.startedAt;
-		// CC counts by tool name: bash calls count as bash (not read/search),
-		// matching CollapsedReadSearchContent's disjoint counters.
-		if (m.toolName === "bash") {
-			bashCount += 1;
-			continue;
-		}
+		// AUDIT §6 (P1) — a read-only bash command counts as read/search/list, not
+		// "ran N bash commands". CC (getToolSearchOrReadInfo, collapseReadSearch.ts:831-882)
+		// routes read-only bash by its classification (isList → listCount, isSearch →
+		// searchCount, otherwise readOperationCount); only NON-read-only bash becomes
+		// bashCount, and that only under fullscreen. In pi a non-read-only bash has no
+		// classification, so it already breaks the group (rebuildGroups flushes on the
+		// undefined classification) and never reaches here — every bash member is
+		// read-only. So route bash the same as any other tool, by classification.kind.
 		const c = m.classification;
 		if (!c) continue;
 		switch (c.kind) {
@@ -280,6 +306,9 @@ function buildGroup(members: ToolRecord[], id: number): GroupInfo {
 				if (c.server && !mcpServers.includes(c.server)) mcpServers.push(c.server);
 				break;
 			default:
+				// read: track unique file paths (real Read calls carry a path); bash
+				// reads like `cat`/`head` have no path, so count the operation (CC
+				// readOperationCount, collapseReadSearch.ts:874-882).
 				if (c.path) readPaths.add(c.path);
 				else readNoPath += 1;
 				break;
@@ -310,7 +339,12 @@ function rebuildGroups(): void {
 	const newGroups: GroupInfo[] = [];
 	let run: ToolRecord[] = [];
 	const flush = () => {
-		if (run.length >= 2) {
+		// AUDIT §6 (P1) — CC collapseReadSearch.ts:770-780 flushGroup builds a
+		// collapsed group whenever the run has ≥1 collapsible tool use (a lone
+		// read/search/list still renders as "Read 1 file (ctrl+o to expand)").
+		// pi previously required ≥2, so a single read-only call fell back to a
+		// bare tool row. buildGroup + the render path already handle 1 member.
+		if (run.length >= 1) {
 			const g = buildGroup(run, nextGroupId++);
 			// Absorb any pending thinking into the new group.
 			if (pendingThinkingMs > 0) {
@@ -347,7 +381,49 @@ function rebuildGroups(): void {
 }
 
 function groupOf(toolCallId: string): GroupInfo | undefined {
-	return groups.find((g) => g.members.some((m) => m.toolCallId === toolCallId));
+	return (
+		groups.find((g) => g.members.some((m) => m.toolCallId === toolCallId)) ??
+		// AUDIT §5:399 — also resolve members of PAST turns' settled groups so a
+		// global Ctrl+O re-render keeps them collapsed instead of exploding.
+		archivedGroups.find((g) => g.members.some((m) => m.toolCallId === toolCallId))
+	);
+}
+
+/** Cap retained arg strings for archived members. glance lines truncate to ~72
+ *  chars anyway (toolSummary), so a 512-char ceiling loses nothing visible while
+ *  ensuring a huge bash command / path can't stay resident for the session. */
+function capArgs(args: unknown): unknown {
+	if (typeof args !== "object" || args === null) return args;
+	const out: Record<string, unknown> = {};
+	for (const [k, v] of Object.entries(args as Record<string, unknown>)) {
+		out[k] = typeof v === "string" && v.length > 512 ? v.slice(0, 512) : v;
+	}
+	return out;
+}
+
+/** Move the current turn's settled groups into the archive (light shells: member
+ *  results stripped) so a later global Ctrl+O still resolves and collapses them.
+ *  AUDIT §5:399. */
+function archiveCurrentGroups(): void {
+	for (const g of groups) {
+		// Only archive groups that actually collapsed (≥1 leader summary worth
+		// keeping). Strip heavy per-member results so nothing large persists.
+		for (const m of g.members) {
+			m.result = undefined;
+			m.status = m.status === "pending" ? "success" : m.status;
+			// Cap retained arg strings — glance lines only need a short summary, and
+			// a bash command / long path could otherwise pin megabytes per turn.
+			m.args = capArgs(m.args);
+		}
+		g.running = false;
+		g.active = false;
+		g.invalidator = undefined;
+		clearHintTimer(g.hintState);
+		archivedGroups.push(g);
+	}
+	if (archivedGroups.length > MAX_ARCHIVED_GROUPS) {
+		archivedGroups = archivedGroups.slice(archivedGroups.length - MAX_ARCHIVED_GROUPS);
+	}
 }
 
 /** Bump a group's recency so the MAX 5 blink budget favors the latest work. */
@@ -422,10 +498,16 @@ export function registerGrouping(pi: ExtensionAPI): void {
 		// tools is only ever looked up by ids in turnToolOrder (see rebuildGroups),
 		// so dropping it here is safe and prevents every ToolRecord (with full
 		// tool result) from accumulating for the whole session.
+		// AUDIT §5:399 — archive this turn's settled groups (as light shells with
+		// results stripped) BEFORE dropping them, so a later global Ctrl+O still
+		// resolves past-turn members and keeps them collapsed instead of exploding
+		// into loose rows. tools/turnToolOrder are still cleared (B0 OOM guard).
+		archiveCurrentGroups();
 		tools = new Map();
 		turnToolOrder = [];
 		clearAllHintTimers();
 		groups = [];
+		toolInvalidators.clear();
 		pendingThinkingMs = 0;
 		thinkingOpenSince = undefined;
 		markBlinkActivity();
@@ -557,9 +639,15 @@ export function registerGrouping(pi: ExtensionAPI): void {
 
 function invalidateGroups(): void {
 	for (const g of groups) {
-		if (g.invalidator) {
+		// Prefer the leader's registered invalidator; fall back to the leader's
+		// last-captured render invalidate (AUDIT §5:493 — a group formed after its
+		// leader already settled has no g.invalidator yet, so the leader would
+		// never re-render to draw the newly-hidden members).
+		const leaderId = g.members[0]?.toolCallId;
+		const invalidate = g.invalidator ?? (leaderId ? toolInvalidators.get(leaderId) : undefined);
+		if (invalidate) {
 			try {
-				g.invalidator();
+				invalidate();
 			} catch {
 				/* noop */
 			}
@@ -571,8 +659,12 @@ function invalidateGroups(): void {
 // Render helpers (called from builtins.ts renderCall/renderResult)
 // ---------------------------------------------------------------------------
 
-/** Register the leader's invalidate so the group refreshes on member updates. */
+/** Register the leader's invalidate so the group refreshes on member updates.
+ *  Called by every member's renderCall/renderResult; we record EVERY tool's
+ *  latest invalidate (AUDIT §5:493) so a settled leader can be promoted when a
+ *  later member turns its standalone row into a group. */
 export function registerGroupInvalidator(toolCallId: string, invalidate: () => void): void {
+	toolInvalidators.set(toolCallId, invalidate);
 	const g = groupOf(toolCallId);
 	if (g && isLeader(toolCallId)) g.invalidator = invalidate;
 }

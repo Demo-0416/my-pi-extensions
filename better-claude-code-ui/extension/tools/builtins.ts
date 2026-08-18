@@ -421,10 +421,15 @@ function groupMemberPreview(m: { status: string; result: unknown }, theme: Theme
 }
 
 function renderGroupCall(toolCallId: string, theme: Theme, ctx: RenderContext): string | undefined {
+	// Capture this tool's invalidate on EVERY render, before the group-existence
+	// checks (AUDIT §5:493). A tool that currently renders standalone may become a
+	// group leader when a later member joins; invalidateGroups() then needs its
+	// invalidate to promote it. Recording only inside the "is a leader" branch
+	// missed exactly this case — the leader had already settled standalone.
+	registerGroupInvalidator(toolCallId, ctx.invalidate);
 	if (isHiddenGroupMember(toolCallId)) return "";
 	const info = getGroupRenderInfo(toolCallId, ctx.expanded);
 	if (!info) return undefined;
-	registerGroupInvalidator(toolCallId, ctx.invalidate);
 	const palette = getPalette(theme);
 	if (info.phase === "collapsed") {
 		return renderCollapsedSummary(info, theme, palette, displayPathFor(ctx));
@@ -438,10 +443,9 @@ function renderGroupCall(toolCallId: string, theme: Theme, ctx: RenderContext): 
 }
 
 function renderGroupResult(toolCallId: string, theme: Theme, ctx: RenderContext): string | undefined {
-	if (isHiddenGroupMember(toolCallId)) return "";
-	const info = getGroupRenderInfo(toolCallId, ctx.expanded);
-	if (!info) return undefined;
 	registerGroupInvalidator(toolCallId, ctx.invalidate);
+	if (isHiddenGroupMember(toolCallId)) return "";
+	if (!getGroupRenderInfo(toolCallId, ctx.expanded)) return undefined;
 	// The whole group (collapsed summary or expanded preview) is rendered by
 	// renderGroupCall; renderResult must add nothing or the group is doubled.
 	return "";
@@ -596,10 +600,13 @@ export function registerBuiltins(pi: ExtensionAPI): void {
 				return cachedText(c.lastComponent, leadBody(theme, body));
 			}
 
-			// Expanded: full output. pi merges stdout+stderr into one stream, so
-			// we render in default color (CC's red-stderr separation is not
-			// achievable with the merged pi output).
-			const body = buildPreviewText(collected.lines, theme, previewLimit(), collected.total, (l) => l);
+			// Expanded: full output (CC ctrl+o expands to the whole result, not a
+			// different 8-line window). previewLimit() would take the FIRST 8 lines
+			// while the collapsed view shows the LAST 8 — swapping windows, not
+			// expanding (AUDIT §5:531). pi already caps bash stdout at 2000 lines
+			// (truncate.js), so rendering all collected lines is bounded. Merged
+			// stdout+stderr → default color (CC's red-stderr split is unavailable).
+			const body = buildPreviewText(collected.lines, theme, collected.lines.length, collected.total, (l) => l);
 			return cachedText(c.lastComponent, leadBody(theme, body));
 		},
 	});
