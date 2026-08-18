@@ -909,6 +909,11 @@ export function registerBuiltins(pi: ExtensionAPI): void {
 		promptSnippet: editTool.promptSnippet, // AUDIT §5:403 — forward system-prompt contributions.
 		promptGuidelines: editTool.promptGuidelines,
 		parameters: editTool.parameters,
+		// AUDIT §5:778 — forward pi's prepareArguments (edit.js prepareEditArguments).
+		// It coerces edits sent as a JSON string (Opus 4.6 / GLM-5.1) into an array
+		// and lifts legacy top-level oldText/newText into edits[]; without it those
+		// shapes fail schema validation before execute ever runs.
+		prepareArguments: editTool.prepareArguments,
 		renderShell: "self",
 		async execute(toolCallId, params, signal, onUpdate, ctx) {
 			return createEditToolDefinition(ctx.cwd).execute(toolCallId, params, signal, onUpdate, ctx);
