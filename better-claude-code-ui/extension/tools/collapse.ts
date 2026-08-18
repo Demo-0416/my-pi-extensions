@@ -328,13 +328,13 @@ function plural(count: number, one: string, other: string): string {
 	return count === 1 ? one : other;
 }
 
-// CC CollapsedReadSearchContent.tsx has NO live thinking clock: the collapsed
-// group summary only shows a settled "thought for Xs" once thinking is
-// attributed to the group. The live `thinking` → `thought for Xs` stopwatch
-// lives solely in SpinnerAnimationRow.tsx:197-201 (the spinner status row),
-// driven by its own thinkingStatus prop — not by group collapse. So there is no
-// open-interval "now - thinkingSince" term here; the duration is just the
-// settled accumulator.
+// The thinking duration is a settled accumulator (no open-interval wall clock):
+// it is attributed to the group when the thinking span closes, before the
+// group's tools start. Latest CC (v2.1.234, observed in-transcript) folds this
+// duration into the collapsed group line itself — present tense "thinking for
+// Xs" while the group is active, past "thought for Xs" once settled. (The local
+// CC source snapshot is older and still skips thinking in collapseReadSearch;
+// the spinner row's own thinkingStatus clock is a separate, live signal.)
 export function groupThinkingMs(group: CollapsedGroup): number {
 	return Math.max(0, group.thinkingMs);
 }
@@ -387,11 +387,12 @@ export function collapsedSummary(
 					: plural(count, `listed ${n(count)} directory`, `listed ${n(count)} directories`);
 		parts.push(phase === "active" ? text : settled);
 	};
-	// CC only ever renders a settled "thought for Xs" in the collapsed group
-	// (no present-tense "thinking for" — that lives in the spinner row, not here).
+	// CC folds the thinking duration into the collapsed group line: present
+	// tense "thinking for Xs" while the group runs, past "thought for Xs"
+	// once settled — same active/settled tense as the search/read fragments.
 	const thinking = groupThinkingMs(group);
 	if (thinking >= COLLAPSE_THINKING_MIN_MS) {
-		parts.push(`thought for ${formatDuration(thinking)}`);
+		parts.push(phase === "active" ? `thinking for ${formatDuration(thinking)}` : `thought for ${formatDuration(thinking)}`);
 	}
 	if (group.searchCount > 0) fragment("search", group.searchCount);
 	if (group.readCount > 0) fragment("read", group.readCount);

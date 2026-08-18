@@ -1,18 +1,19 @@
 /**
  * AUDIT §4 / §5：collapse.ts:387 (P2 ×3) + grouping.ts:266 (P3 ×2) +
  * grouping.ts:40 (P3 ×1) — GroupInfo.thinkingSince 从头到尾没有赋值点，
- * 折叠组摘要里“进行时 thinking for Xs”分支和 groupThinkingMs 的开区间累加
- * 全是死代码。
+ * groupThinkingMs 的开区间累加全是死代码。
  *
- * CC 判据：CollapsedReadSearchContent.tsx（折叠组摘要的对应物）根本没有
- * thinking 片段（现在/过去时都没有），live 的 `thinking`→`thought for Xs`
- * 秒表只存在于 SpinnerAnimationRow.tsx:197-201（spinner 状态行）。所以折叠组
- * 里的 live 秒表 + 现在时分支应删除；只保留 settled 的 thinkingMs→
- * “thought for Xs”（dsh-tui 移植的落定文案）。
+ * CC 判据（据 CC v2.1.234 会话内实测，本地源码快照已过期）：折叠组行本身
+ * 带 thinking 时长——组进行中是现在时 "thinking for Xs"，落定后变过去时
+ * "thought for Xs"。时长是 thinking 跨度关闭时归因给组的累加值（定值，
+ * 不走秒）；live 的 `thinking`→`thought for Xs` 秒表是 spinner 行
+ * SpinnerAnimationRow 的独立信号，不在折叠组里。所以删掉的是开区间
+ * `now - thinkingSince` 死代码，保留 thinkingMs 累加值 + 时态感知文案。
  *
- * 本测试锁定删除后的行为：
+ * 本测试锁定：
  *  1. groupThinkingMs 只返回累加值，不再吃 `now` 开区间。
- *  2. collapsedSummary 落定文案永远是过去时 "thought for Xs"，没有现在时。
+ *  2. collapsedSummary 的 thinking 片段时态跟随组：active→"thinking for"，
+ *     settled→"thought for"。
  *  3. thinkingMs 未达 1s 阈值时不出现 thinking 片段。
  */
 import { test } from "node:test";
@@ -50,19 +51,19 @@ test("groupThinkingMs 只返回累加值（不再有 now 开区间）", () => {
 	assert.equal(groupThinkingMs.length, 1, "groupThinkingMs 应只有一个形参");
 });
 
-test("collapsedSummary 的 thinking 片段永远是过去时 'thought for'（无现在时死分支）", () => {
-	// running=true（组还在跑）时，thinking 片段仍是过去时——CC 折叠组从不显示
-	// 现在时 'thinking for'（那是 spinner 行的事）。
+test("collapsedSummary 的 thinking 片段时态跟随组：active→'thinking for'，settled→'thought for'", () => {
+	// 组进行中（running=true）：现在时 "thinking for Xs"，与 search/read
+	// 片段的现在时一致。
 	const running = makeGroup({ thinkingMs: 2_000, readCount: 2, running: true, active: true });
 	const sRun = collapsedSummary(running);
-	assert.match(sRun, /thought for 2s/i, `running 组也应是过去时，实际: ${sRun}`);
-	assert.doesNotMatch(sRun, /thinking for/i, `不应出现现在时 'thinking for'，实际: ${sRun}`);
+	assert.match(sRun, /thinking for 2s/i, `running 组应是现在时，实际: ${sRun}`);
+	assert.doesNotMatch(sRun, /thought for/i, `running 组不应是过去时，实际: ${sRun}`);
 
-	// settled 同样是过去时。
+	// 组落定：过去时 "thought for Xs"。
 	const settled = makeGroup({ thinkingMs: 5_000, readCount: 3 });
 	const sSet = collapsedSummary(settled);
 	assert.match(sSet, /thought for 5s/i, `settled 组应是过去时，实际: ${sSet}`);
-	assert.doesNotMatch(sSet, /thinking for/i);
+	assert.doesNotMatch(sSet, /thinking for/i, `settled 组不应是现在时，实际: ${sSet}`);
 });
 
 test("thinkingMs 低于 1s 阈值时不出现 thinking 片段", () => {

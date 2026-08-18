@@ -303,13 +303,16 @@ function rebuildGroups(): void {
 		}
 	}
 	flush();
-	// Preserve invalidators and hint hold-state across rebuilds (leaders may
-	// already be rendering).
+	// Preserve invalidators, hint hold-state, and the attributed thinking
+	// duration across rebuilds (leaders may already be rendering; without
+	// inheriting thinkingMs, ≥3-member groups lose "thinking for Xs" on the
+	// second rebuild — buildGroup zeroes it and pendingThinkingMs is spent).
 	for (const ng of newGroups) {
 		const old = groups.find((g) => g.members[0]?.toolCallId === ng.members[0]?.toolCallId);
 		if (old) {
 			ng.invalidator = old.invalidator;
 			ng.hintState = old.hintState;
+			ng.thinkingMs += old.thinkingMs;
 		}
 	}
 	groups = newGroups;
