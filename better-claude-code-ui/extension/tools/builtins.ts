@@ -215,7 +215,7 @@ function statusDot(ctx: RenderContext, theme: Theme): string {
 			// Register this component so blinkTick toggles it too — without this
 			// the dot freezes (and phase=false renders an invisible space).
 			armBlink(ctx.toolCallId, ctx.invalidate);
-			return currentBlinkPhase() ? theme.fg("dim", BLACK_CIRCLE) : " ";
+			return currentBlinkPhase(ctx.toolCallId) ? theme.fg("dim", BLACK_CIRCLE) : " ";
 		}
 		return theme.fg("dim", BLACK_CIRCLE);
 	}
@@ -456,6 +456,11 @@ export function registerBuiltins(pi: ExtensionAPI): void {
 		name: "read",
 		label: "read",
 		description: readTool.description,
+		// AUDIT §5:403 — forward the builtin's system-prompt contributions.
+		// Without these the "Available tools" snippet and the read Guidelines
+		// bullets vanish from the default system prompt when we override read.
+		promptSnippet: readTool.promptSnippet,
+		promptGuidelines: readTool.promptGuidelines,
 		parameters: readTool.parameters,
 		renderShell: "self",
 		// 5th param ctx carries the session env + runtime cwd (bash.js:126
@@ -511,6 +516,8 @@ export function registerBuiltins(pi: ExtensionAPI): void {
 		name: "bash",
 		label: "bash",
 		description: bashTool.description,
+		promptSnippet: bashTool.promptSnippet, // AUDIT §5:403 — forward system-prompt contributions.
+		promptGuidelines: bashTool.promptGuidelines,
 		parameters: bashTool.parameters,
 		renderShell: "self",
 		async execute(toolCallId, params, signal, onUpdate, ctx) {
@@ -592,6 +599,8 @@ export function registerBuiltins(pi: ExtensionAPI): void {
 		name: "grep",
 		label: "grep",
 		description: grepTool.description,
+		promptSnippet: grepTool.promptSnippet, // AUDIT §5:403 — forward system-prompt contributions.
+		promptGuidelines: grepTool.promptGuidelines,
 		parameters: grepTool.parameters,
 		renderShell: "self",
 		async execute(toolCallId, params, signal, onUpdate, ctx) {
@@ -635,6 +644,8 @@ export function registerBuiltins(pi: ExtensionAPI): void {
 		name: "find",
 		label: "find",
 		description: findTool.description,
+		promptSnippet: findTool.promptSnippet, // AUDIT §5:403 — forward system-prompt contributions.
+		promptGuidelines: findTool.promptGuidelines,
 		parameters: findTool.parameters,
 		renderShell: "self",
 		async execute(toolCallId, params, signal, onUpdate, ctx) {
@@ -675,6 +686,8 @@ export function registerBuiltins(pi: ExtensionAPI): void {
 		name: "ls",
 		label: "ls",
 		description: lsTool.description,
+		promptSnippet: lsTool.promptSnippet, // AUDIT §5:403 — forward system-prompt contributions.
+		promptGuidelines: lsTool.promptGuidelines,
 		parameters: lsTool.parameters,
 		renderShell: "self",
 		async execute(toolCallId, params, signal, onUpdate, ctx) {
@@ -748,6 +761,8 @@ export function registerBuiltins(pi: ExtensionAPI): void {
 		name: "write",
 		label: "write",
 		description: writeTool.description,
+		promptSnippet: writeTool.promptSnippet, // AUDIT §5:403 — forward system-prompt contributions.
+		promptGuidelines: writeTool.promptGuidelines,
 		parameters: writeTool.parameters,
 		renderShell: "self",
 		async execute(toolCallId, params, signal, onUpdate, ctx) {
@@ -891,6 +906,8 @@ export function registerBuiltins(pi: ExtensionAPI): void {
 		name: "edit",
 		label: "edit",
 		description: editTool.description,
+		promptSnippet: editTool.promptSnippet, // AUDIT §5:403 — forward system-prompt contributions.
+		promptGuidelines: editTool.promptGuidelines,
 		parameters: editTool.parameters,
 		renderShell: "self",
 		async execute(toolCallId, params, signal, onUpdate, ctx) {

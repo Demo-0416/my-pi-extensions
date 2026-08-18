@@ -92,6 +92,12 @@ let pendingThinkingMs = 0;
 let thinkingOpenSince: number | undefined;
 let blinkTimer: ReturnType<typeof setInterval> | null = null;
 let blinkPhase = true;
+// AUDIT §5:199 — ids in this tick's blink budget. Out-of-budget rows are not
+// re-rendered each tick, so they must not resolve to the off-phase blank (that
+// would freeze the dot away). These sets let the phase helpers force the solid
+// dot for anyone outside the budget while in-budget rows keep blinking.
+let blinkBudgetGroups = new Set<number>();
+let blinkBudgetStandalone = new Set<string>();
 let activeSession = false;
 // Non-grouped tools' running dots: armBlink registers their invalidate so the
 // same tick drives their blink (CC useBlink: every pending dot blinks, not
@@ -127,6 +133,8 @@ function reset(): void {
 	clearAllHintTimers();
 	groups = [];
 	standaloneBlinkers.clear();
+	blinkBudgetGroups = new Set();
+	blinkBudgetStandalone = new Set();
 	pendingThinkingMs = 0;
 	thinkingOpenSince = undefined;
 	agentDepth = 0;
@@ -195,7 +203,15 @@ function blinkTick(): void {
 	blinkPhase = !blinkPhase;
 	// Invalidate at most MAX_BLINKING_GROUPS leaders per tick, most recent first.
 	const active = groups.filter((g) => g.active).sort((a, b) => b.lastActiveAt - a.lastActiveAt);
-	for (const g of active.slice(0, MAX_BLINKING_GROUPS)) {
+	const budgetGroups = active.slice(0, MAX_BLINKING_GROUPS);
+	// AUDIT §5:199 — record who is in this tick's blink budget. Rows OUTSIDE the
+	// budget are not re-rendered, so they freeze on whatever frame they last
+	// painted; if that frame was the "off" (space) phase, the dot vanishes for
+	// good. currentBlinkPhase()/groupBlinkVisible() consult these sets so an
+	// out-of-budget row always resolves to the solid dot (never the blank space),
+	// while in-budget rows keep blinking. The budget still caps re-render volume.
+	blinkBudgetGroups = new Set(budgetGroups.map((g) => g.id));
+	for (const g of budgetGroups) {
 		if (g.invalidator) {
 			try {
 				g.invalidator();
@@ -206,8 +222,9 @@ function blinkTick(): void {
 	}
 	// Standalone (non-grouped) running dots — same rhythm, same budget, most
 	// recently armed first.
-	const standalone = [...standaloneBlinkers.values()].slice(-MAX_BLINKING_GROUPS);
-	for (const invalidate of standalone) {
+	const standaloneEntries = [...standaloneBlinkers.entries()].slice(-MAX_BLINKING_GROUPS);
+	blinkBudgetStandalone = new Set(standaloneEntries.map(([id]) => id));
+	for (const [, invalidate] of standaloneEntries) {
 		try {
 			invalidate();
 		} catch {
@@ -702,7 +719,7 @@ export function renderCollapsedSummary(
 		? "  "
 		: g.failed
 			? `${dim(fg(palette.cc.error, BLACK_CIRCLE))} `
-			: (ensureBlink(), blinkPhase ? `${theme.fg("dim", BLACK_CIRCLE)} ` : "  ");
+			: (ensureBlink(), groupBlinkVisible(g.id) ? `${theme.fg("dim", BLACK_CIRCLE)} ` : "  ");
 	const text = g.active ? summary : theme.fg("dim", summary);
 	// CC CtrlOToExpand.tsx:39 — dim "(ctrl+o to expand)", always rendered.
 	const hint = italic(theme.fg("dim", "(ctrl+o to expand)"));
@@ -804,8 +821,22 @@ export function renderGroupPreview(
 /** Re-export for builtins to classify a tool on demand. */
 export { classifyToolCall };
 
-/** The current blink phase (for status dots in non-grouped tools). */
-export function currentBlinkPhase(): boolean {
+/**
+ * Whether a group leader's pending dot should be visible this frame. In-budget
+ * groups follow the global blink phase; out-of-budget groups (not re-rendered
+ * every tick) always show the solid dot so they never freeze on the blank phase.
+ * (AUDIT §5:199.)
+ */
+function groupBlinkVisible(groupId: number): boolean {
+	return blinkBudgetGroups.has(groupId) ? blinkPhase : true;
+}
+
+/** The current blink phase for a non-grouped tool's status dot. Out-of-budget
+ *  standalone tools (not re-rendered this tick) resolve to visible so their dot
+ *  never freezes on the blank phase; in-budget ones follow the global phase.
+ *  (AUDIT §5:199.) Called with no id from contexts that just want the phase. */
+export function currentBlinkPhase(toolCallId?: string): boolean {
+	if (toolCallId !== undefined && !blinkBudgetStandalone.has(toolCallId)) return true;
 	return blinkPhase;
 }
 
