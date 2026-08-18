@@ -371,11 +371,14 @@ export class BannerComponent {
 			visibleWidth(resumed ?? ""),
 			MIN_LEFT_WIDTH,
 		);
-		const boxWidth = Math.min(contentWidth + 4, width - 2);
-		// A content row is `│ <inner> │` = inner + 4 columns; the top/bottom
-		// borders are boxWidth columns. inner must be boxWidth - 4 (2 borders +
-		// 2 padding spaces), not boxWidth - 2, or every content row runs 2 cols
-		// past the frame and the right border steps out (AUDIT §5 banner.ts:375).
+		const boxWidth = Math.min(contentWidth + 4, Math.max(0, width - 2));
+		// The titled top border `╭── pi agent ──╮` is a fixed 14-col scaffold
+		// (3 + 1 + 8 + 1 + fill + 1); below 14 cols its fill length goes negative
+		// (`"─".repeat(负数)` → RangeError) and the border overflows the box.
+		// On a terminal too narrow to hold the box, degrade to a borderless
+		// centered stack (CC's progressive narrow-terminal degradation) rather
+		// than crash (AUDIT §5 banner.ts:392).
+		if (boxWidth < 14) return this.renderCompactPlain(width, theme);
 		const inner = boxWidth - 4;
 		const cwd = truncatePath(this.info.cwd, inner);
 
@@ -394,6 +397,28 @@ export class BannerComponent {
 		rows.push(`${this.border(theme, "│")} ${center(dim(cwd), inner)} ${this.border(theme, "│")}`);
 		if (resumed) rows.push(`${this.border(theme, "│")} ${center(dim(resumed), inner)} ${this.border(theme, "│")}`);
 		rows.push(this.border(theme, `╰${"─".repeat(boxWidth - 2)}╯`));
+		return rows;
+	}
+
+	/**
+	 * Borderless fallback for terminals too narrow to hold the compact box
+	 * (< 14 cols, where the titled top border can't fit). A centered
+	 * title/welcome/cwd stack clamped to the available width — no box chrome,
+	 * so no `"─".repeat(负数)` (AUDIT §5 banner.ts:392).
+	 */
+	private renderCompactPlain(width: number, theme: Theme): string[] {
+		const dim = (s: string): string => theme.fg("dim", s);
+		const accent = (s: string): string => theme.fg("accent", s);
+		const bold = (s: string): string => theme.bold(s);
+		const w = Math.max(1, width);
+		const welcome = this.info.welcome ?? "Welcome back!";
+		const model = this.info.model() ?? "";
+		const resumed = this.resumedLine();
+		const cwd = truncatePath(this.info.cwd, w);
+		const rows: string[] = [center(accent("pi agent"), w), center(bold(welcome), w)];
+		if (model) rows.push(center(dim(model), w));
+		rows.push(center(dim(cwd), w));
+		if (resumed) rows.push(center(dim(resumed), w));
 		return rows;
 	}
 }
