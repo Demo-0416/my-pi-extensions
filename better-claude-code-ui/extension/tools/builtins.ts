@@ -31,7 +31,7 @@ import {
 	createReadToolDefinition,
 	createWriteToolDefinition,
 } from "@earendil-works/pi-coding-agent";
-import { sliceByColumn, visibleWidth, wrapTextWithAnsi, type Component } from "@earendil-works/pi-tui";
+import { sliceByColumn, truncateToWidth, visibleWidth, wrapTextWithAnsi, type Component } from "@earendil-works/pi-tui";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { resolve, relative } from "node:path";
 import {
@@ -116,20 +116,25 @@ function shortPath(cwd: string, filePath: string): string {
 	return home ? filePath.replace(home, "~") : filePath;
 }
 
-/** CC BashTool/UI.tsx:104-127 — truncate to 2 lines, then 160 chars, append … */
+/** CC BashTool/UI.tsx:104-127 — truncate to 2 lines, then 160 chars, append …
+ *  CC slices by code unit; we slice by visible width instead (AUDIT §5:120) so
+ *  a CJK command header can't reach 320 columns and a surrogate pair / grapheme
+ *  is never split mid-character. `truncateToWidth` appends the ellipsis itself. */
 function truncateCommand(command: string): string {
 	const lines = command.split("\n");
 	const needsLineTruncation = lines.length > MAX_COMMAND_DISPLAY_LINES;
-	const needsCharTruncation = command.length > MAX_COMMAND_DISPLAY_CHARS;
+	const needsCharTruncation = visibleWidth(command) > MAX_COMMAND_DISPLAY_CHARS;
 	if (!needsLineTruncation && !needsCharTruncation) return command;
 	let truncated = command;
 	if (needsLineTruncation) {
 		truncated = lines.slice(0, MAX_COMMAND_DISPLAY_LINES).join("\n");
 	}
-	if (truncated.length > MAX_COMMAND_DISPLAY_CHARS) {
-		truncated = truncated.slice(0, MAX_COMMAND_DISPLAY_CHARS);
+	truncated = truncated.trim();
+	if (visibleWidth(truncated) > MAX_COMMAND_DISPLAY_CHARS) {
+		// width-aware, grapheme-safe; ellipsis counts toward the budget.
+		return truncateToWidth(truncated, MAX_COMMAND_DISPLAY_CHARS, "…");
 	}
-	return `${truncated.trim()}…`;
+	return `${truncated}…`;
 }
 
 function summarizeText(text: string, max = 60): string {
