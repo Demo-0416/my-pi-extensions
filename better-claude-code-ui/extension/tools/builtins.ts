@@ -490,6 +490,14 @@ export function registerBuiltins(pi: ExtensionAPI): void {
 				return cachedText(c.lastComponent, withResultLead(theme, theme.fg("dim", "[Image data detected and sent to Claude]")));
 			}
 			const content = resultText(result);
+			// pi appends a continuation notice when a user-supplied `limit` stopped
+			// early with more file left (read.js:243):
+			//   "\n\n[N more lines in file. Use offset=N to continue.]"
+			// Strip it before counting/previewing — otherwise the blank line + notice
+			// inflate "Read N lines" by 2 (AUDIT §5:440). details is unset on this
+			// path, so the count falls through to countLines and picks up the trailer.
+			const MORE_LINES_TRAILER = /\n\n\[\d+ more lines in file\. Use offset=\d+ to continue\.\]$/;
+			const visibleContent = content.replace(MORE_LINES_TRAILER, "");
 			const details = (result as { details?: { truncation?: { truncated?: boolean; totalLines?: number } } }).details;
 			// CC FileReadTool/UI.tsx:131 — "Read N lines" (N bold). When pi
 			// truncates it appends a "[N more lines…]" trailer to the text; the
@@ -497,13 +505,12 @@ export function registerBuiltins(pi: ExtensionAPI): void {
 			const total =
 				details?.truncation?.truncated && typeof details.truncation.totalLines === "number"
 					? details.truncation.totalLines
-					: countLines(content);
+					: countLines(visibleContent);
 			const stat = `Read ${theme.bold(String(total))} ${total === 1 ? "line" : "lines"}`;
 			let text = stat;
 			if (details?.truncation?.truncated) text += theme.fg("warning", " (truncated)");
 			if (!expanded) return cachedText(c.lastComponent, withResultLead(theme, text));
-			const body = content.replace(/\n\n\[\d+ more lines in file\. Use offset=\d+ to continue\.\]$/, "");
-			const lines = body.split("\n");
+			const lines = visibleContent.split("\n");
 			const preview = buildPreviewText(lines, theme, previewLimit(), lines.length, (l) => theme.fg("dim", l));
 			return cachedText(c.lastComponent, `${withResultLead(theme, text)}\n${indentResultBody(preview)}`);
 		},
