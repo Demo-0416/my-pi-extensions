@@ -42,6 +42,8 @@ export class TraceServer {
   private server: Server | null = null;
   private port = 0;
   private readonly collectors = new Map<string, Collector>();
+  /** 每个 session 的 SSE 订阅退订函数：重注册前先退订，防 /trace 重复执行叠 listener。 */
+  private readonly unsubscribers = new Map<string, () => void>();
   private readonly sseClients = new Set<SseClient>();
   private readonly webDir: string;
 
@@ -92,10 +94,16 @@ export class TraceServer {
     return [...this.collectors.keys()];
   }
 
-  /** 注册活跃采集会话（/api/session 与 SSE 优先用内存态）。 */
+  /** 注册活跃采集会话（/api/session 与 SSE 优先用内存态）。
+   *  同 session 重复注册时先退订旧 listener——/trace 每次执行都会调 register()。 */
   register(collector: Collector): void {
-    this.collectors.set(collector.session.sessionId, collector);
-    collector.subscribe((event) => this.broadcast(collector.session.sessionId, event));
+    const sessionId = collector.session.sessionId;
+    this.unsubscribers.get(sessionId)?.();
+    this.unsubscribers.set(
+      sessionId,
+      collector.subscribe((event) => this.broadcast(sessionId, event)),
+    );
+    this.collectors.set(sessionId, collector);
   }
 
   private broadcast(sessionId: string, event: LiveEvent): void {

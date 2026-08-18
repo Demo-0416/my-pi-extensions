@@ -21,6 +21,15 @@ import { groupRecordsByTurn } from './model.ts';
 import { truncateField } from './store.ts';
 import { computeStats, type TraceStats } from './stats.ts';
 
+/**
+ * fullContent LRU 上限（防长会话 OOM）：
+ * 总字节 8MB、最多 256 条、单条硬上限 256KB。
+ * 超过单条上限的原文不存——该字段 Show full 不可用，记录里仍有 8KB 截断值。
+ */
+const FULL_CONTENT_MAX_BYTES = 8 * 1024 * 1024;
+const FULL_CONTENT_MAX_ENTRIES = 256;
+const FULL_CONTENT_MAX_ENTRY_BYTES = 256 * 1024;
+
 /** SSE 增量事件（DESIGN.md 3.8）。 */
 export type LiveEvent =
   | { type: 'record'; record: TraceRecord }
@@ -203,14 +212,34 @@ export class Collector {
   private turnOffset = 0;
   /** 最近一次 input 事件的来源（归因到下一条 user 记录）。 */
   private lastInputSource: unknown = null;
-  /** 被截断字段的原文（recordId:field → 原文），供前端 Show full 展开。 */
+  /** 被截断字段的原文（recordId:field → 原文），供前端 Show full 展开。
+   *  LRU 有界：超条目数或总字节时淘汰最旧条目，防长会话 OOM。 */
   private readonly fullContent = new Map<string, string>();
+  private fullContentBytes = 0;
+
+  /** 存原文（有界 LRU）。超过单条硬上限的不存——Show full 对该字段不可用。 */
+  private storeFullContent(key: string, content: string): void {
+    const bytes = Buffer.byteLength(content, 'utf8');
+    if (bytes > FULL_CONTENT_MAX_ENTRY_BYTES) return;
+    while (
+      this.fullContent.size >= FULL_CONTENT_MAX_ENTRIES
+      || this.fullContentBytes + bytes > FULL_CONTENT_MAX_BYTES
+    ) {
+      const oldest = this.fullContent.keys().next().value as string | undefined;
+      if (oldest === undefined) break;
+      const evicted = this.fullContent.get(oldest);
+      if (evicted !== undefined) this.fullContentBytes -= Buffer.byteLength(evicted, 'utf8');
+      this.fullContent.delete(oldest);
+    }
+    this.fullContent.set(key, content);
+    this.fullContentBytes += bytes;
+  }
 
   /** 截断字符串并存原文，返回截断后的值。 */
   private truncateAndStore(recordId: string, field: string, content: string): string {
     const truncated = truncateField(content) as string;
     if (content !== truncated) {
-      this.fullContent.set(`${recordId}:${field}`, content);
+      this.storeFullContent(`${recordId}:${field}`, content);
     }
     return truncated;
   }
@@ -355,14 +384,15 @@ export class Collector {
       // source 不是 interactive 的 user 消息 → context（系统注入的上下文/提醒）。
       const sourceKind = (this.lastInputSource as { kind?: string } | null)?.kind;
       const isContext = sourceKind !== undefined && sourceKind !== 'interactive';
+      const userId = this.nextId();
       const record: TraceRecord = {
-        id: this.nextId(),
+        id: userId,
         kind: isContext ? 'context' : 'user',
         turn: this.currentTurn,
         startedAt: typeof message.timestamp === 'number' ? message.timestamp : Date.now(),
         durationMs: null,
         text: oneLine(textFromContent(message.content)),
-        fullText: textFromContent(message.content),
+        fullText: this.truncateAndStore(userId, 'fullText', textFromContent(message.content)),
         isError: false,
         source: this.lastInputSource ?? undefined,
       };
