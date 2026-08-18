@@ -153,11 +153,33 @@ export interface ResolvedPalette {
 }
 
 /**
+ * Memo so the same theme name always yields the same ResolvedPalette instance.
+ * diff.ts:460 guards its shiki re-warm with `p === activeSgrPalette`; without a
+ * stable instance that guard is always false, so every write/edit render would
+ * re-run setDiffPalette's full cache re-warm (and, combined with the Map-mutation
+ * bug it used to trip, freeze the TUI). A theme switch changes the name, so the
+ * guard still fires correctly across real theme changes.
+ */
+const paletteCache = new Map<string, ResolvedPalette>();
+
+/**
  * The active palette: CC six-color board by theme name; for an unknown theme,
  * derive from pi theme tokens (accent/success/error/…) so the extension still
  * reads correctly under any pi theme.
  */
 export function resolvePalette(
+	themeName: string | undefined,
+	tokenFg: (token: string) => string | undefined,
+): ResolvedPalette {
+	const cacheKey = themeName ?? "";
+	const cached = paletteCache.get(cacheKey);
+	if (cached !== undefined) return cached;
+	const resolved = buildPalette(themeName, tokenFg);
+	paletteCache.set(cacheKey, resolved);
+	return resolved;
+}
+
+function buildPalette(
 	themeName: string | undefined,
 	tokenFg: (token: string) => string | undefined,
 ): ResolvedPalette {

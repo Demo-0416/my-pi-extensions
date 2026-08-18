@@ -463,7 +463,13 @@ export function setDiffPalette(p: ResolvedPalette): void {
 	// shiki theme, so the next render highlights instead of falling back to
 	// plain text (CC HighlightedCode re-highlights on theme change).
 	const theme = shikiThemeForPalette(p);
-	for (const key of highlightCache.keys()) {
+	// Snapshot the keys before iterating: warmHighlightCache hits touchCache on a
+	// cache hit (diff.ts touchCache: delete + re-set), which per the JS Map spec
+	// moves the key to the end of the iteration order, so a live `for..of
+	// highlightCache.keys()` would revisit it forever — a synchronous infinite
+	// loop that freezes the TUI (AUDIT §2 P0-1).
+	const keys = [...highlightCache.keys()];
+	for (const key of keys) {
 		const sep1 = key.indexOf("\u0000");
 		const sep2 = key.indexOf("\u0000", sep1 + 1);
 		if (sep1 < 0 || sep2 < 0) continue;
