@@ -38,6 +38,78 @@ const CANVAS_LIGHT: Rgb = rgb(255, 255, 255);
 /** A palette value: a 24-bit hex string, or a basic ANSI index (0-15). */
 export type ColorValue = string | number;
 
+/** Terminal color depth, mirroring pi Theme's getColorMode() (theme.d.ts:8). */
+export type ColorMode = "truecolor" | "256color";
+
+// ---------------------------------------------------------------------------
+// hex → xterm-256 downconversion — ported verbatim from pi theme.js:108-173 so
+// our downconverted diff chrome lands on exactly the same 256-cube index pi's
+// own renderer would pick for the same hex under a 256color terminal.
+// ---------------------------------------------------------------------------
+
+const CUBE_VALUES = [0, 95, 135, 175, 215, 255];
+const GRAY_VALUES = Array.from({ length: 24 }, (_, i) => 8 + i * 10);
+
+function findClosestCubeIndex(value: number): number {
+	let minDist = Infinity;
+	let minIdx = 0;
+	for (let i = 0; i < CUBE_VALUES.length; i += 1) {
+		const dist = Math.abs(value - (CUBE_VALUES[i] as number));
+		if (dist < minDist) {
+			minDist = dist;
+			minIdx = i;
+		}
+	}
+	return minIdx;
+}
+
+function findClosestGrayIndex(gray: number): number {
+	let minDist = Infinity;
+	let minIdx = 0;
+	for (let i = 0; i < GRAY_VALUES.length; i += 1) {
+		const dist = Math.abs(gray - (GRAY_VALUES[i] as number));
+		if (dist < minDist) {
+			minDist = dist;
+			minIdx = i;
+		}
+	}
+	return minIdx;
+}
+
+function colorDistance(r1: number, g1: number, b1: number, r2: number, g2: number, b2: number): number {
+	const dr = r1 - r2;
+	const dg = g1 - g2;
+	const db = b1 - b2;
+	return dr * dr * 0.299 + dg * dg * 0.587 + db * db * 0.114;
+}
+
+function rgbTo256(r: number, g: number, b: number): number {
+	const rIdx = findClosestCubeIndex(r);
+	const gIdx = findClosestCubeIndex(g);
+	const bIdx = findClosestCubeIndex(b);
+	const cubeR = CUBE_VALUES[rIdx] as number;
+	const cubeG = CUBE_VALUES[gIdx] as number;
+	const cubeB = CUBE_VALUES[bIdx] as number;
+	const cubeIndex = 16 + 36 * rIdx + 6 * gIdx + bIdx;
+	const cubeDist = colorDistance(r, g, b, cubeR, cubeG, cubeB);
+	const gray = Math.round(0.299 * r + 0.587 * g + 0.114 * b);
+	const grayIdx = findClosestGrayIndex(gray);
+	const grayValue = GRAY_VALUES[grayIdx] as number;
+	const grayIndex = 232 + grayIdx;
+	const grayDist = colorDistance(r, g, b, grayValue, grayValue, grayValue);
+	const maxC = Math.max(r, g, b);
+	const minC = Math.min(r, g, b);
+	const spread = maxC - minC;
+	if (spread < 10 && grayDist < cubeDist) return grayIndex;
+	return cubeIndex;
+}
+
+function hexTo256(hex: string): number {
+	const { r, g, b } = hexToRgb(hex);
+	return rgbTo256(r, g, b);
+}
+
+
 /** The CC role palette (DESIGN 2.2 table). */
 export interface CcPalette {
 	claude: ColorValue;
@@ -175,6 +247,8 @@ export interface ResolvedPalette {
 	scheme: "dark" | "light";
 	/** True when the palette came from a CC theme (vs. pi-token fallback). */
 	isCcTheme: boolean;
+	/** Terminal color depth; drives whether fgAnsi/bgAnsi emit 24-bit or 256. */
+	colorMode: ColorMode;
 }
 
 /**
@@ -188,6 +262,31 @@ export interface ResolvedPalette {
 const paletteCache = new Map<string, ResolvedPalette>();
 
 /**
+ * Detect the terminal color depth by probing the pi theme's own output.
+ *
+ * pi's Theme.fg downconverts hex→256 when the terminal is 256color (theme.js
+ * fgAnsi:175-191): a downconverted hex is always emitted as `38;5;N` with N≥16
+ * (the 6×6×6 cube starts at index 16, grays at 232), whereas an ANSI-index color
+ * (0-15) emits `38;5;N` with N<16 and a truecolor hex emits `38;2;…`. So any
+ * probe token that comes back as `38;5;≥16` proves 256color mode; a `38;2` proves
+ * truecolor. All-ANSI themes give no evidence → default truecolor (harmless: an
+ * ANSI index renders identically in both, and *-ansi themes target that case).
+ */
+function detectColorMode(tokenFg: (token: string) => string | undefined): ColorMode {
+	for (const token of ["accent", "error", "success", "warning", "muted", "borderMuted"]) {
+		const ansi = tokenFg(token);
+		if (!ansi) continue;
+		const idx = /\x1b\[[34]8;5;(\d{1,3})m/u.exec(ansi);
+		if (idx) {
+			if (Number(idx[1]) >= 16) return "256color";
+			continue; // ANSI index (<16): ambiguous, keep looking.
+		}
+		if (/\x1b\[[34]8;2;/u.test(ansi)) return "truecolor";
+	}
+	return "truecolor";
+}
+
+/**
  * The active palette: CC six-color board by theme name; for an unknown theme,
  * derive from pi theme tokens (accent/success/error/…) so the extension still
  * reads correctly under any pi theme.
@@ -196,22 +295,34 @@ export function resolvePalette(
 	themeName: string | undefined,
 	tokenFg: (token: string) => string | undefined,
 ): ResolvedPalette {
-	const cacheKey = themeName ?? "";
+	const colorMode = detectColorMode(tokenFg);
+	// Fold the color mode into the cache key: diff.ts seeds the cache at module
+	// load with resolvePalette("claude-code-dark", () => undefined) (→ truecolor,
+	// no probe evidence); without the mode in the key that entry would poison the
+	// real getPalette(theme) call on a 256color terminal (same name → cache hit →
+	// stale truecolor palette). Mode is session-constant, so real renders still
+	// hit one stable instance — the reference guard in diff.ts:460 keeps holding.
+	const cacheKey = `${themeName ?? ""} ${colorMode}`;
 	const cached = paletteCache.get(cacheKey);
-	if (cached !== undefined) return cached;
-	const resolved = buildPalette(themeName, tokenFg);
+	if (cached !== undefined) {
+		activeColorMode = cached.colorMode;
+		return cached;
+	}
+	const resolved = buildPalette(themeName, tokenFg, colorMode);
 	paletteCache.set(cacheKey, resolved);
+	activeColorMode = resolved.colorMode;
 	return resolved;
 }
 
 function buildPalette(
 	themeName: string | undefined,
 	tokenFg: (token: string) => string | undefined,
+	colorMode: ColorMode,
 ): ResolvedPalette {
 	const key = paletteKeyForThemeName(themeName);
 	const scheme = isLightThemeName(themeName) ? "light" : "dark";
 	if (key !== undefined) {
-		return { cc: PALETTES[key], chrome: scheme === "light" ? DIFF_CHROME_LIGHT : DIFF_CHROME_DARK, scheme, isCcTheme: true };
+		return { cc: PALETTES[key], chrome: scheme === "light" ? DIFF_CHROME_LIGHT : DIFF_CHROME_DARK, scheme, isCcTheme: true, colorMode };
 	}
 	// Fallback: synthesize a palette from the active pi theme's tokens.
 	const tok = (token: string, fallback: ColorValue): ColorValue => {
@@ -260,7 +371,7 @@ function buildPalette(
 		selectionBg: tok("selectedBg", "#264F78"),
 		bashMsgBg: tok("toolSuccessBg", "#413C41"),
 	};
-	return { cc: fallback, chrome: scheme === "light" ? DIFF_CHROME_LIGHT : DIFF_CHROME_DARK, scheme, isCcTheme: false };
+	return { cc: fallback, chrome: scheme === "light" ? DIFF_CHROME_LIGHT : DIFF_CHROME_DARK, scheme, isCcTheme: false, colorMode };
 }
 
 // ---------------------------------------------------------------------------
@@ -283,16 +394,37 @@ function ansiIndexToBg(code: number): string {
 	return code < 8 ? `4${code}` : `10${code - 8}`;
 }
 
-/** The truecolor (or basic-ANSI) foreground escape for a palette value. */
+/**
+ * The color depth fgAnsi/bgAnsi encode. resolvePalette keeps this in sync with
+ * the active pi theme's getColorMode(); until then it defaults to truecolor.
+ * A module-level flag (not a fgAnsi arg) so diff.ts's existing zero-arg call
+ * sites don't need to thread the mode through every helper. Session-constant in
+ * practice, so no per-render churn. Exposed via setActiveColorMode for tests.
+ */
+let activeColorMode: ColorMode = "truecolor";
+
+/** Override the color mode used by fgAnsi/bgAnsi. Test/host hook. */
+export function setActiveColorMode(mode: ColorMode): void {
+	activeColorMode = mode;
+}
+
+/** The current color mode fgAnsi/bgAnsi encode hex values in. */
+export function getActiveColorMode(): ColorMode {
+	return activeColorMode;
+}
+
+/** The truecolor / 256-color / basic-ANSI foreground escape for a palette value. */
 export function fgAnsi(value: ColorValue): string {
 	if (typeof value === "number") return `\x1b[${ansiIndexToFg(value)}m`;
+	if (activeColorMode === "256color") return `\x1b[38;5;${hexTo256(value)}m`;
 	const { r, g, b } = hexToRgb(value);
 	return `\x1b[38;2;${r};${g};${b}m`;
 }
 
-/** The truecolor (or basic-ANSI) background escape for a palette value. */
+/** The truecolor / 256-color / basic-ANSI background escape for a palette value. */
 export function bgAnsi(value: ColorValue): string {
 	if (typeof value === "number") return `\x1b[${ansiIndexToBg(value)}m`;
+	if (activeColorMode === "256color") return `\x1b[48;5;${hexTo256(value)}m`;
 	const { r, g, b } = hexToRgb(value);
 	return `\x1b[48;2;${r};${g};${b}m`;
 }
