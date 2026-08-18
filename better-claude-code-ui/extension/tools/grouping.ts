@@ -439,18 +439,20 @@ export function registerGrouping(pi: ExtensionAPI): void {
 	pi.on("message_update", async (event) => {
 		markBlinkActivity();
 		const content = (event as { message?: { content?: unknown } })?.message?.content;
-		if (!Array.isArray(content)) return;
-		let hasThinking = false;
-		let hasOther = false;
-		for (const block of content) {
-			const b = block as { type?: string };
-			if (b.type === "thinking") hasThinking = true;
-			else if (b.type === "text" || b.type === "toolCall") hasOther = true;
-		}
-		if (hasThinking && thinkingOpenSince === undefined) {
-			thinkingOpenSince = Date.now();
-		}
-		if (hasOther && thinkingOpenSince !== undefined) {
+		if (!Array.isArray(content) || content.length === 0) return;
+		// AUDIT §5:449 — decide open/close by the LAST (currently-streaming) block,
+		// not by "any non-thinking block present". event.message.content is the
+		// cumulative streaming array, so once a text block precedes a *second*
+		// thinking block, the old "hasThinking && hasOther" logic both re-opened
+		// (thinking present) and closed (text present) the span in the same tick
+		// → every 2nd+ thinking segment was attributed 0ms. Anthropic streams
+		// thinking → text → toolCall in order, so the last element is the block
+		// being written right now.
+		const last = content[content.length - 1] as { type?: string };
+		const lastIsThinking = last?.type === "thinking";
+		if (lastIsThinking) {
+			if (thinkingOpenSince === undefined) thinkingOpenSince = Date.now();
+		} else if (thinkingOpenSince !== undefined) {
 			pendingThinkingMs += Date.now() - thinkingOpenSince;
 			thinkingOpenSince = undefined;
 		}
