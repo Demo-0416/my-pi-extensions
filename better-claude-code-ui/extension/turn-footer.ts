@@ -42,20 +42,36 @@ interface TurnFooterData {
 }
 
 export function registerTurnFooter(pi: ExtensionAPI): void {
-	let turnStartMs = 0;
-	let verb = sampleTurnVerb();
+	// CC's turn footer is per *request*, not per LLM call: it appends one line at
+	// query completion measuring `Date.now() - loadingStartTimeRef` (CC
+	// REPL.tsx:4004). A pi `turn` is a single agent-loop iteration — one LLM reply
+	// plus its tools — so a request spans N turn_start/turn_end pairs (AUDIT §3-2,
+	// pi agent-loop.js:43-131). Keying the footer on turn_end therefore printed
+	// one `✻ Worked for Ns` per iteration (AUDIT §5 turn-footer.ts:48).
+	//
+	// The request boundary is agent_start … agent_settled: `_runAgentPrompt` runs
+	// the initial prompt plus any continuations (retries, compaction, queued
+	// follow-ups) — each emitting its own agent_start/agent_end — then fires a
+	// single agent_settled in its finally (pi agent-session.js:744-756). We start
+	// the clock on the first agent_start of a request and settle exactly once on
+	// agent_settled, matching CC's one-line-per-request semantics.
+	let requestStartMs = 0;
 
-	pi.on("turn_start", async () => {
-		turnStartMs = Date.now();
-		verb = sampleTurnVerb();
+	pi.on("agent_start", async () => {
+		// Only the first agent_start of a request starts the clock; continuation
+		// runs (agent.continue) keep the original start time so the reported
+		// duration covers the whole request, like CC's loadingStartTimeRef.
+		if (!requestStartMs) requestStartMs = Date.now();
 	});
 
-	pi.on("turn_end", async () => {
-		if (!turnStartMs) return;
-		const duration = Date.now() - turnStartMs;
-		turnStartMs = 0;
+	pi.on("agent_settled", async () => {
+		if (!requestStartMs) return;
+		const duration = Date.now() - requestStartMs;
+		requestStartMs = 0;
 		if (duration <= TURN_FOOTER_MIN_MS) return;
-		pi.appendEntry<TurnFooterData>("cc-turn-footer", { ms: duration, verb });
+		// CC picks a fresh random past-tense verb when it creates the completion
+		// message (createTurnDurationMessage); sample here at settle time.
+		pi.appendEntry<TurnFooterData>("cc-turn-footer", { ms: duration, verb: sampleTurnVerb() });
 	});
 
 	pi.registerEntryRenderer<TurnFooterData>("cc-turn-footer", (entry, _options, theme) => {
