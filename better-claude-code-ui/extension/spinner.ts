@@ -83,12 +83,16 @@ export function registerSpinner(pi: ExtensionAPI): void {
 		}
 	});
 
-	// Sample once per turn; re-renders must not re-roll the verb.
-	pi.on("turn_start", async () => {
-		verb = sampleVerb();
-	});
-
+	// Sample once per request, at agent_start — matching CC's mount-time
+	// useState(() => sample(getSpinnerVerbs())) (CC Spinner.tsx:204). The verb
+	// must be picked *before* the first working message is shown; the old code
+	// sampled at turn_start, which fires *after* agent_start, so agent_start
+	// always displayed the previous request's verb (AUDIT §5 spinner.ts:87).
+	// A pi `turn` is one loop iteration, not one request (AUDIT §3-2), so a
+	// per-turn resample would also make the verb jump mid-request — CC keeps it
+	// stable for the whole request.
 	pi.on("agent_start", async (_event, ctx) => {
+		verb = sampleVerb();
 		if (ctx.hasUI) ctx.ui.setWorkingMessage(`${verb}…`);
 	});
 
