@@ -370,6 +370,15 @@ function displayPathFor(ctx: RenderContext): (p: string) => string {
 	return (p: string) => shortPath(ctx.cwd, p);
 }
 
+/** The per-member result line for an expanded group's glance preview. */
+function groupMemberPreview(m: { status: string; result: unknown }, theme: Theme): string {
+	if (m.status === "pending") return theme.fg("dim", "…");
+	const out = resultText(m.result);
+	if (!out) return "";
+	const collected = collectNonEmptyLines(out, previewLimit());
+	return buildPreviewText(collected.lines, theme, previewLimit(), collected.total, (l) => theme.fg("dim", l));
+}
+
 function renderGroupCall(toolCallId: string, theme: Theme, ctx: RenderContext): string | undefined {
 	if (isHiddenGroupMember(toolCallId)) return "";
 	const info = getGroupRenderInfo(toolCallId, ctx.expanded);
@@ -379,7 +388,12 @@ function renderGroupCall(toolCallId: string, theme: Theme, ctx: RenderContext): 
 	if (info.phase === "collapsed") {
 		return renderCollapsedSummary(info, theme, palette, displayPathFor(ctx));
 	}
-	return renderGroupPreview(info, theme, palette, displayPathFor(ctx), () => "");
+	// Expanded (preview) phase: the leader's renderCall draws the WHOLE group —
+	// glance lines plus each member's result preview. renderResult returns "" so
+	// the group is not drawn a second time (pi runs renderCall AND renderResult
+	// unconditionally, tool-execution.js:228-263; the old `() => ""` here plus a
+	// real callback in renderResult drew every glance line twice — AUDIT §5:368).
+	return renderGroupPreview(info, theme, palette, displayPathFor(ctx), (m) => groupMemberPreview(m, theme));
 }
 
 function renderGroupResult(toolCallId: string, theme: Theme, ctx: RenderContext): string | undefined {
@@ -387,21 +401,9 @@ function renderGroupResult(toolCallId: string, theme: Theme, ctx: RenderContext)
 	const info = getGroupRenderInfo(toolCallId, ctx.expanded);
 	if (!info) return undefined;
 	registerGroupInvalidator(toolCallId, ctx.invalidate);
-	if (info.phase === "collapsed") return "";
-	const palette = getPalette(theme);
-	return renderGroupPreview(
-		info,
-		theme,
-		palette,
-		displayPathFor(ctx),
-		(m) => {
-			if (m.status === "pending") return theme.fg("dim", "…");
-			const out = resultText(m.result);
-			if (!out) return "";
-			const collected = collectNonEmptyLines(out, previewLimit());
-			return buildPreviewText(collected.lines, theme, previewLimit(), collected.total, (l) => theme.fg("dim", l));
-		},
-	);
+	// The whole group (collapsed summary or expanded preview) is rendered by
+	// renderGroupCall; renderResult must add nothing or the group is doubled.
+	return "";
 }
 
 // ---------------------------------------------------------------------------
