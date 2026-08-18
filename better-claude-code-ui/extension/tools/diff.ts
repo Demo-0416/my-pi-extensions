@@ -107,10 +107,6 @@ export interface DiffRenderOptions {
 	toggleHint?: string;
 }
 
-function diffStrip(value: string): string {
-	return value.replaceAll(/\x1b\[[0-9;]*m/gu, "");
-}
-
 function tabs(text: string): string {
 	return text.replaceAll("\t", "  ");
 }
@@ -162,27 +158,6 @@ function adaptiveWrapRows(width: number): number {
 	if (width >= 180) return MAX_WRAP_ROWS_WIDE;
 	if (width >= 120) return MAX_WRAP_ROWS_MED;
 	return MAX_WRAP_ROWS_NARROW;
-}
-
-function fit(s: DiffSgr, value: string, width: number): string {
-	if (width <= 0) return "";
-	const plain = diffStrip(value);
-	if (plain.length <= width) return value + " ".repeat(width - plain.length);
-	const showWidth = width > 2 ? width - 1 : width;
-	let visible = 0;
-	let index = 0;
-	while (index < value.length && visible < showWidth) {
-		if (value[index] === "\x1b") {
-			const end = value.indexOf("m", index);
-			if (end !== -1) {
-				index = end + 1;
-				continue;
-			}
-		}
-		visible += 1;
-		index += 1;
-	}
-	return width > 2 ? `${value.slice(0, index)}${D_RST}${s.FG_DIM}›${D_RST}` : `${value.slice(0, index)}${D_RST}`;
 }
 
 function ansiState(text: string): string {
@@ -400,9 +375,12 @@ export function collapsedDiffHint(
 	width = 80,
 	toggleHint = "ctrl+o to toggle",
 ): string {
+	// Singular when the count is 1 (AUDIT §5 diff.ts:349).
+	const lineWord = remainingLines === 1 ? "line" : "lines";
+	const hunkWord = hiddenHunks === 1 ? "hunk" : "hunks";
 	const candidates = [
-		`… (${remainingLines} more diff lines${hiddenHunks > 0 ? ` • ${hiddenHunks} more hunks` : ""} • ${toggleHint})`,
-		`… (${remainingLines} more lines${hiddenHunks > 0 ? ` • ${hiddenHunks} hunks` : ""})`,
+		`… (${remainingLines} more diff ${lineWord}${hiddenHunks > 0 ? ` • ${hiddenHunks} more ${hunkWord}` : ""} • ${toggleHint})`,
+		`… (${remainingLines} more ${lineWord}${hiddenHunks > 0 ? ` • ${hiddenHunks} ${hunkWord}` : ""})`,
 		`… (+${remainingLines}${hiddenHunks > 0 ? ` • +${hiddenHunks}h` : ""})`,
 		"…",
 	];
@@ -586,7 +564,12 @@ function fromPatch(
 		}
 		let oldLine = hunk.oldStart;
 		let newLine = hunk.newStart;
-		for (const raw of hunk.lines) {
+		for (const rawWithCr of hunk.lines) {
+			// CRLF sources leave a trailing \r on every patch line; a raw \r in a
+			// rendered row snaps the cursor to column 0 and overwrites the gutter
+			// already drawn there (AUDIT §5 diff.ts:523). Strip at the parse
+			// boundary so every consumer sees clean text.
+			const raw = rawWithCr.endsWith("\r") ? rawWithCr.slice(0, -1) : rawWithCr;
 			if (raw === "\\ No newline at end of file") continue;
 			const marker = raw[0];
 			const text = raw.slice(1);
@@ -890,36 +873,42 @@ export function renderUnified(p: ResolvedPalette, diff: ParsedDiff, width: numbe
 			index += 1;
 		}
 
-		// CC Fallback.tsx:190-204 — pair the k-th removal with the k-th
-		// addition and word-diff each pair (pairCount = min(len)); a pair
-		// whose changeRatio exceeds the threshold falls back to whole-line.
-		// Unpaired tail lines (the longer side's remainder) render whole-line.
+		// CC Fallback.tsx:190-204 — pair the k-th removal with the k-th addition
+		// for word-level highlighting only (a pair whose changeRatio exceeds the
+		// threshold falls back to whole-line). Render order stays the patch's
+		// block order: all removals, then all additions. Interleaving the pairs
+		// put an unpaired removal tail *after* the additions, so old-side line
+		// numbers jumped backwards within one hunk (AUDIT §5 diff.ts:733).
 		const pairCount = Math.min(removals.length, additions.length);
-		for (let k = 0; k < pairCount; k += 1) {
-			const removal = removals[k]!;
-			const addition = additions[k]!;
-			const analysis = wordDiffAnalysis(removal.line.content, addition.line.content);
-			if (analysis.changeRatio <= CHANGE_RATIO_THRESHOLD) {
-				if (canHighlight) {
-					emitRow(removal.line.oldNum, "-", s.BG_DEL, `${s.FG_DEL}${D_BOLD}`, injectBg(s, removal.highlighted, analysis.oldRanges, s.BG_DEL, s.BG_DEL_W), s.BG_DEL);
-					emitRow(addition.line.newNum, "+", s.BG_ADD, `${s.FG_ADD}${D_BOLD}`, injectBg(s, addition.highlighted, analysis.newRanges, s.BG_ADD, s.BG_ADD_W), s.BG_ADD);
-				} else {
-					const words = plainWordDiff(s, removal.line.content, addition.line.content);
-					emitRow(removal.line.oldNum, "-", s.BG_DEL, `${s.FG_DEL}${D_BOLD}`, `${s.BG_DEL}${words.old}`, s.BG_DEL);
-					emitRow(addition.line.newNum, "+", s.BG_ADD, `${s.FG_ADD}${D_BOLD}`, `${s.BG_ADD}${words.new}`, s.BG_ADD);
-				}
+		const analyses = Array.from({ length: pairCount }, (_, k) =>
+			wordDiffAnalysis(removals[k]!.line.content, additions[k]!.line.content));
+		const plainWords = analyses.map((analysis, k) =>
+			!canHighlight && analysis.changeRatio <= CHANGE_RATIO_THRESHOLD
+				? plainWordDiff(s, removals[k]!.line.content, additions[k]!.line.content)
+				: undefined);
+		for (let k = 0; k < removals.length; k += 1) {
+			const entry = removals[k]!;
+			const analysis = k < pairCount ? analyses[k] : undefined;
+			if (analysis !== undefined && analysis.changeRatio <= CHANGE_RATIO_THRESHOLD) {
+				const body = canHighlight
+					? injectBg(s, entry.highlighted, analysis.oldRanges, s.BG_DEL, s.BG_DEL_W)
+					: `${s.BG_DEL}${plainWords[k]!.old}`;
+				emitRow(entry.line.oldNum, "-", s.BG_DEL, `${s.FG_DEL}${D_BOLD}`, body, s.BG_DEL);
 			} else {
-				emitRow(removal.line.oldNum, "-", s.BG_DEL, `${s.FG_DEL}${D_BOLD}`, `${s.BG_DEL}${canHighlight ? removal.highlighted : removal.line.content}`, s.BG_DEL);
-				emitRow(addition.line.newNum, "+", s.BG_ADD, `${s.FG_ADD}${D_BOLD}`, `${s.BG_ADD}${canHighlight ? addition.highlighted : addition.line.content}`, s.BG_ADD);
+				emitRow(entry.line.oldNum, "-", s.BG_DEL, `${s.FG_DEL}${D_BOLD}`, `${s.BG_DEL}${canHighlight ? entry.highlighted : entry.line.content}`, s.BG_DEL);
 			}
 		}
-		for (let k = pairCount; k < removals.length; k += 1) {
-			const entry = removals[k]!;
-			emitRow(entry.line.oldNum, "-", s.BG_DEL, `${s.FG_DEL}${D_BOLD}`, `${s.BG_DEL}${canHighlight ? entry.highlighted : entry.line.content}`, s.BG_DEL);
-		}
-		for (let k = pairCount; k < additions.length; k += 1) {
+		for (let k = 0; k < additions.length; k += 1) {
 			const entry = additions[k]!;
-			emitRow(entry.line.newNum, "+", s.BG_ADD, `${s.FG_ADD}${D_BOLD}`, `${s.BG_ADD}${canHighlight ? entry.highlighted : entry.line.content}`, s.BG_ADD);
+			const analysis = k < pairCount ? analyses[k] : undefined;
+			if (analysis !== undefined && analysis.changeRatio <= CHANGE_RATIO_THRESHOLD) {
+				const body = canHighlight
+					? injectBg(s, entry.highlighted, analysis.newRanges, s.BG_ADD, s.BG_ADD_W)
+					: `${s.BG_ADD}${plainWords[k]!.new}`;
+				emitRow(entry.line.newNum, "+", s.BG_ADD, `${s.FG_ADD}${D_BOLD}`, body, s.BG_ADD);
+			} else {
+				emitRow(entry.line.newNum, "+", s.BG_ADD, `${s.FG_ADD}${D_BOLD}`, `${s.BG_ADD}${canHighlight ? entry.highlighted : entry.line.content}`, s.BG_ADD);
+			}
 		}
 	}
 
@@ -971,10 +960,10 @@ export function renderSplit(p: ResolvedPalette, diff: ParsedDiff, width: number,
 			const gutter = ` ${s.FG_STRIPE}${"╱".repeat(numberWidth + 2)}${D_RST}${s.FG_RULE}│${D_RST} `;
 			return { gutter, contGutter: gutter, bodyRows: [stripes(s, codeWidth)] };
 		}
-		if (line.type === "sep") {
-			const gutter = `${s.BG_BASE} ${s.FG_DIM}${fit(s, "", numberWidth + 2)}${D_RST}${s.FG_RULE}│${D_RST} `;
-			return { gutter, contGutter: gutter, bodyRows: [`${s.BG_BASE}${s.FG_DIM}...${D_RST}`] };
-		}
+		// No sep branch: buildSplitRows only ever emits sep as a {left: sep,
+		// right: sep} pair, and the row loop below renders that pair as one
+		// full-width dim "..." row (same as unified) before halfBuild runs —
+		// a per-side sep here was unreachable (AUDIT §5 diff.ts:843).
 		const isDel = line.type === "del";
 		const isAdd = line.type === "add";
 		const gutterBg = isDel ? s.BG_DEL : isAdd ? s.BG_ADD : s.BG_BASE;
@@ -1028,12 +1017,16 @@ export function renderSplit(p: ResolvedPalette, diff: ParsedDiff, width: number,
 			leftResult = halfBuild(left, leftBody, null, "left");
 			rightResult = halfBuild(right, rightBody, null, "right");
 		}
+		// Filler rows for the shorter side keep that side's add/del background —
+		// BG_DEFAULT here visibly broke the color block mid-row (AUDIT §5 diff.ts:904).
+		const fillBgOf = (line: DiffLine | null): string =>
+			line !== null && line.type === "del" ? s.BG_DEL : line !== null && line.type === "add" ? s.BG_ADD : s.BG_BASE;
 		const rowCount = Math.max(leftResult.bodyRows.length, rightResult.bodyRows.length);
 		for (let bodyRow = 0; bodyRow < rowCount; bodyRow += 1) {
 			const leftGutter = bodyRow === 0 ? leftResult.gutter : leftResult.contGutter;
 			const rightGutter = bodyRow === 0 ? rightResult.gutter : rightResult.contGutter;
-			const leftBody = leftResult.bodyRows[bodyRow] ?? (left === null ? stripes(s, codeWidth) : `${BG_DEFAULT}${" ".repeat(codeWidth)}${D_RST}`);
-			const rightBody = rightResult.bodyRows[bodyRow] ?? (right === null ? stripes(s, codeWidth) : `${BG_DEFAULT}${" ".repeat(codeWidth)}${D_RST}`);
+			const leftBody = leftResult.bodyRows[bodyRow] ?? (left === null ? stripes(s, codeWidth) : `${fillBgOf(left)}${" ".repeat(codeWidth)}${D_RST}`);
+			const rightBody = rightResult.bodyRows[bodyRow] ?? (right === null ? stripes(s, codeWidth) : `${fillBgOf(right)}${" ".repeat(codeWidth)}${D_RST}`);
 			out.push(`${leftGutter}${leftBody}${s.DIVIDER}${rightGutter}${rightBody}`);
 		}
 	}
@@ -1063,17 +1056,28 @@ export class DiffCardComponent implements Component {
 	/** Stable key the caller uses to decide whether to reuse the card. */
 	diffKey: string | undefined;
 	private readonly cache = new Map<number, string[]>();
-	constructor(private buildFn: (width: number) => string[]) {}
+	/** Palette the cached rows were built with — a theme switch must not reuse them. */
+	private cachePalette: ResolvedPalette | undefined;
+	constructor(private buildFn: (width: number, palette: ResolvedPalette) => string[]) {}
 	/** Replace the render closure (args/header changed) and drop cached lines. */
-	setBuild(build: (width: number) => string[]): void {
+	setBuild(build: (width: number, palette: ResolvedPalette) => string[]): void {
 		this.buildFn = build;
 		this.cache.clear();
 	}
 	render(width: number): string[] {
 		const w = Math.max(20, Math.floor(width));
+		// A theme switch swaps the active palette without necessarily re-running
+		// renderResult (which would setBuild a fresh closure) — invalidate() alone
+		// only cleared the width cache, so the card kept re-serving rows in the
+		// old theme's colors (AUDIT §5 diff.ts:942). Key the cache on the palette
+		// identity and hand the live palette to the build closure.
+		if (this.cachePalette !== activeSgrPalette) {
+			this.cache.clear();
+			this.cachePalette = activeSgrPalette;
+		}
 		const hit = this.cache.get(w);
 		if (hit !== undefined) return hit;
-		const lines = this.buildFn(w);
+		const lines = this.buildFn(w, activeSgrPalette);
 		this.cache.set(w, lines);
 		// Width is part of the key, so a resize while the card is visible
 		// accumulates one render copy per distinct width; cap the variants.
