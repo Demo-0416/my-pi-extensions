@@ -37,7 +37,6 @@ export interface GroupInfo {
 	id: number;
 	members: ToolRecord[];
 	thinkingMs: number;
-	thinkingSince: number | undefined;
 	running: boolean;
 	active: boolean;
 	failed: boolean;
@@ -263,7 +262,6 @@ function buildGroup(members: ToolRecord[], id: number): GroupInfo {
 		id,
 		members,
 		thinkingMs: 0,
-		thinkingSince: undefined,
 		running,
 		active: running,
 		failed,
@@ -513,7 +511,10 @@ export function registerGrouping(pi: ExtensionAPI): void {
 		if (g) {
 			g.running = g.members.some((m) => m.status === "pending");
 			g.failed = g.members.some((m) => m.isError);
-			g.active = g.running || g.thinkingSince !== undefined;
+			// CC isActiveGroup = hasAnyToolInProgress || (isLoading && !hasContentAfter)
+			// (MessageRow.tsx:118) — no thinking term. A group is active iff a member
+			// is still running.
+			g.active = g.running;
 			g.lastActiveAt = Date.now();
 		}
 		markBlinkActivity();
@@ -649,10 +650,9 @@ export function renderCollapsedSummary(
 	displayPath: (p: string) => string,
 ): string {
 	const g = info.group;
-	const now = Date.now();
 	// CC wraps every count in <Bold>; bold's 22m closes only the intensity
 	// attribute, so it survives the settled line's dim foreground (38;2).
-	const summary = collapsedSummary(g, now, (count) => bold(String(count)));
+	const summary = collapsedSummary(g, (count) => bold(String(count)));
 	// CC CollapsedReadSearchContent.tsx:450 — settled groups render <Box minWidth={2}/>
 	// (2 spaces, NO glyph, even when a member errored); active groups render
 	// ToolUseLoader, whose isError dot is red but dimColor (dim + error, static —

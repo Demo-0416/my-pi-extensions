@@ -315,7 +315,6 @@ export interface CollapsedGroup {
 	mcpCallCount: number;
 	mcpServers: readonly string[];
 	thinkingMs: number;
-	thinkingSince?: number;
 	running: boolean;
 	active: boolean;
 	failed: boolean;
@@ -329,10 +328,15 @@ function plural(count: number, one: string, other: string): string {
 	return count === 1 ? one : other;
 }
 
-export function groupThinkingMs(group: CollapsedGroup, now?: number): number {
-	const open =
-		group.thinkingSince === undefined || now === undefined ? 0 : Math.max(0, now - group.thinkingSince);
-	return group.thinkingMs + open;
+// CC CollapsedReadSearchContent.tsx has NO live thinking clock: the collapsed
+// group summary only shows a settled "thought for Xs" once thinking is
+// attributed to the group. The live `thinking` → `thought for Xs` stopwatch
+// lives solely in SpinnerAnimationRow.tsx:197-201 (the spinner status row),
+// driven by its own thinkingStatus prop — not by group collapse. So there is no
+// open-interval "now - thinkingSince" term here; the duration is just the
+// settled accumulator.
+export function groupThinkingMs(group: CollapsedGroup): number {
+	return Math.max(0, group.thinkingMs);
 }
 
 function formatDuration(ms: number): string {
@@ -354,14 +358,15 @@ function formatDuration(ms: number): string {
 
 /**
  * dsh-tui transcript.ts: collapsedSummary — present tense while the group runs,
- * past tense once it settles; each fragment agrees with its own count and clock.
+ * past tense once it settles; each fragment agrees with its own count. The
+ * running/settled tense is driven by `group.running`, not by a wall clock.
  * `styleCount` styles the count numbers (CC CollapsedReadSearchContent wraps
  * every count in <Bold>); defaults to plain. The thinking duration is a clock,
- * not a count, so it is never styled.
+ * not a count, so it is never styled — and CC only shows it settled ("thought
+ * for Xs"), so there is no live-ticking parameter here.
  */
 export function collapsedSummary(
 	group: CollapsedGroup,
-	now?: number,
 	styleCount?: (count: number) => string,
 ): string {
 	const n = (count: number): string => (styleCount ? styleCount(count) : String(count));
@@ -382,10 +387,11 @@ export function collapsedSummary(
 					: plural(count, `listed ${n(count)} directory`, `listed ${n(count)} directories`);
 		parts.push(phase === "active" ? text : settled);
 	};
-	const thinking = groupThinkingMs(group, now);
+	// CC only ever renders a settled "thought for Xs" in the collapsed group
+	// (no present-tense "thinking for" — that lives in the spinner row, not here).
+	const thinking = groupThinkingMs(group);
 	if (thinking >= COLLAPSE_THINKING_MIN_MS) {
-		const tense = group.thinkingSince === undefined ? "thought" : "thinking";
-		parts.push(`${tense} for ${formatDuration(thinking)}`);
+		parts.push(`thought for ${formatDuration(thinking)}`);
 	}
 	if (group.searchCount > 0) fragment("search", group.searchCount);
 	if (group.readCount > 0) fragment("read", group.readCount);
