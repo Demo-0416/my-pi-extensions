@@ -33,7 +33,8 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { sliceByColumn, truncateToWidth, visibleWidth, wrapTextWithAnsi, type Component } from "@earendil-works/pi-tui";
 import { existsSync, readFileSync, statSync } from "node:fs";
-import { resolve, relative } from "node:path";
+import { homedir } from "node:os";
+import { join, resolve, relative } from "node:path";
 import {
 	DiffCardComponent,
 	parseDiff,
@@ -49,6 +50,8 @@ import {
 	warmHighlightCache,
 	warmDiffHighlight,
 	setDiffPalette,
+	type DiffLine,
+	type ParsedDiff,
 } from "./diff.js";
 import {
 	getGroupRenderInfo,
@@ -161,6 +164,106 @@ function isEmptySentinel(text: string): boolean {
 	return EMPTY_SENTINELS.has(text.trim());
 }
 
+/** Strip pi's trailing notices block. grep/find/ls append `\n\n[<notices>]`
+ *  (e.g. "[500 results limit reached. Use limit=1000 for more]") to the result
+ *  text (grep.js:280, find.js:152, ls.js:142); counting it as a result line
+ *  inflates every at-limit stat by one (AUDIT §5:571, §5:611, §5:158). */
+function stripNoticesTrailer(text: string): string {
+	return text.replace(/\n\n\[[^\n]*\]\s*$/, "");
+}
+
+/**
+ * The host builds its builtin tools from settings — read:{autoResizeImages},
+ * bash:{commandPrefix, shellPath} (agent-session.js _buildRuntime). Re-creating
+ * a definition inside execute without them dropped the user's shellPath /
+ * commandPrefix / autoResizeImages (AUDIT §5:465). pi does not expose its
+ * SettingsManager to extensions, so read the same merged settings it does:
+ * global ~/.pi/agent/settings.json overridden by project <cwd>/.pi/settings.json.
+ */
+function hostToolSettings(cwd: string): { shellPath?: string; commandPrefix?: string; autoResizeImages: boolean } {
+	const home = homedir();
+	let shellPath: string | undefined;
+	let commandPrefix: string | undefined;
+	let autoResize: boolean | undefined;
+	for (const path of [join(home, ".pi", "agent", "settings.json"), join(cwd, ".pi", "settings.json")]) {
+		try {
+			if (!existsSync(path)) continue;
+			const raw = JSON.parse(readFileSync(path, "utf8")) as {
+				shellPath?: string;
+				shellCommandPrefix?: string;
+				images?: { autoResize?: boolean };
+			};
+			if (typeof raw.shellPath === "string") shellPath = raw.shellPath;
+			if (typeof raw.shellCommandPrefix === "string") commandPrefix = raw.shellCommandPrefix;
+			if (typeof raw.images?.autoResize === "boolean") autoResize = raw.images.autoResize;
+		} catch {
+			/* unreadable settings file — fall through to defaults */
+		}
+	}
+	// settings-manager normalizes ~ in shellPath before use; mirror that.
+	if (shellPath?.startsWith("~")) shellPath = join(home, shellPath.slice(1));
+	return { shellPath, commandPrefix, autoResizeImages: autoResize ?? true };
+}
+
+/**
+ * Parse pi's real unified patch (edit result.details.patch, edit-diff.js
+ * generateUnifiedPatch) into a ParsedDiff. The old edits[]-concatenation diff
+ * numbered every change from line 1 and had no true file context; the patch
+ * carries the real hunk positions (AUDIT §5:817). Returns null when the string
+ * has no parseable hunk so callers can fall back.
+ */
+function parsePatchToDiff(patch: string): ParsedDiff | null {
+	const rawLines = patch.split("\n");
+	if (rawLines[rawLines.length - 1] === "") rawLines.pop();
+	const lines: DiffLine[] = [];
+	let added = 0;
+	let removed = 0;
+	let chars = 0;
+	let oldLine = 0;
+	let newLine = 0;
+	let inHunk = false;
+	let prevHunk: { oldStart: number; oldLines: number } | null = null;
+	for (const raw of rawLines) {
+		const h = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/.exec(raw);
+		if (h) {
+			const oldStart = Number(h[1]);
+			const oldCount = h[2] !== undefined ? Number(h[2]) : 1;
+			if (prevHunk) {
+				// Same sep semantics as fromPatch: gap = unchanged lines skipped.
+				const gap = oldStart - (prevHunk.oldStart + prevHunk.oldLines);
+				lines.push({ type: "sep", oldNum: null, newNum: gap > 0 ? gap : null, content: "" });
+			}
+			prevHunk = { oldStart, oldLines: oldCount };
+			oldLine = oldStart;
+			newLine = Number(h[3]);
+			inHunk = true;
+			continue;
+		}
+		if (!inHunk) continue; // ---/+++ file headers
+		if (raw.startsWith("\\")) continue; // "\ No newline at end of file"
+		const marker = raw[0];
+		const text = raw.slice(1);
+		if (marker === "+") {
+			lines.push({ type: "add", oldNum: null, newNum: newLine, content: text });
+			newLine += 1;
+			added += 1;
+			chars += text.length;
+		} else if (marker === "-") {
+			lines.push({ type: "del", oldNum: oldLine, newNum: null, content: text });
+			oldLine += 1;
+			removed += 1;
+			chars += text.length;
+		} else {
+			// " " context; some generators emit blank context lines with no marker.
+			lines.push({ type: "ctx", oldNum: oldLine, newNum: newLine, content: text });
+			oldLine += 1;
+			newLine += 1;
+			chars += text.length;
+		}
+	}
+	return lines.length > 0 ? { lines, added, removed, chars } : null;
+}
+
 /** CC countLines (FileWriteTool/UI.tsx:35-38): a trailing EOL terminates the
  *  last line, it does not start a new one. */
 function countLines(text: string): number {
@@ -169,13 +272,20 @@ function countLines(text: string): number {
 }
 
 /** CC GrepTool files_with_matches: N = unique files. pi emits one line per
- *  match as `path:lineno: text`, so dedupe by the path prefix. */
+ *  match as `path:lineno: text`; with context>0 it also emits context lines as
+ *  `path-lineno- text` (grep.js:192-194). Count files from MATCH lines only —
+ *  a context line's file always has a match line, and treating unparseable
+ *  lines (context, notices) as whole-line "files" inflated the count by one
+ *  per context line (AUDIT §5:158). */
 function countGrepFiles(lines: string[]): number {
 	const files = new Set<string>();
 	for (const line of lines) {
-		const colon = line.indexOf(":");
-		files.add(colon > 0 ? line.slice(0, colon) : line);
+		const m = /^(.+?):\d+: /.exec(line);
+		if (m) files.add(m[1]!);
 	}
+	// Output with no parseable match line at all (defensive): fall back to
+	// counting distinct raw lines so the stat is never a hard 0 for real output.
+	if (files.size === 0 && lines.length > 0) return new Set(lines).size;
 	return files.size;
 }
 
@@ -367,7 +477,8 @@ function buildPreviewText(
 	const remaining = total - shown.length;
 	let text = shown.map((l) => styleLine(l || " ")).join("\n");
 	if (remaining > 0) {
-		text += `\n${theme.fg("muted", `... (${remaining} more lines)`)}`;
+		// AUDIT §5:315 — pluralize: "1 more line", not "1 more lines".
+		text += `\n${theme.fg("muted", `... (${remaining} more line${remaining === 1 ? "" : "s"})`)}`;
 	}
 	return text;
 }
@@ -384,7 +495,8 @@ function buildTailPreview(
 	const earlier = total - tail.length;
 	let text = tail.map((l) => styleLine(l || " ")).join("\n");
 	if (earlier > 0) {
-		text = `${theme.fg("muted", `... (${earlier} earlier lines)`)}\n${text}`;
+		// AUDIT §5:315 — pluralize: "1 earlier line", not "1 earlier lines".
+		text = `${theme.fg("muted", `... (${earlier} earlier line${earlier === 1 ? "" : "s"})`)}\n${text}`;
 	}
 	return text;
 }
@@ -416,8 +528,12 @@ function groupMemberPreview(m: { status: string; result: unknown }, theme: Theme
 	if (m.status === "pending") return theme.fg("dim", "…");
 	const out = resultText(m.result);
 	if (!out) return "";
+	// collectNonEmptyLines(…, tailLimit) keeps the LAST N lines; render them
+	// with the tail wording ("N earlier lines" above) — the old buildPreviewText
+	// call captioned the same tail window as "front N + N more lines"
+	// (AUDIT §5:388).
 	const collected = collectNonEmptyLines(out, previewLimit());
-	return buildPreviewText(collected.lines, theme, previewLimit(), collected.total, (l) => theme.fg("dim", l));
+	return buildTailPreview(collected.lines, collected.total, theme, previewLimit(), (l) => theme.fg("dim", l));
 }
 
 function renderGroupCall(toolCallId: string, theme: Theme, ctx: RenderContext): string | undefined {
@@ -474,9 +590,11 @@ export function registerBuiltins(pi: ExtensionAPI): void {
 		renderShell: "self",
 		// 5th param ctx carries the session env + runtime cwd (bash.js:126
 		// exposeSessionEnvironment); create with ctx.cwd so resume/foreign-cwd
-		// sessions execute in the right directory.
+		// sessions execute in the right directory. Forward the host's
+		// settings-derived options too (AUDIT §5:465).
 		async execute(toolCallId, params, signal, onUpdate, ctx) {
-			return createReadToolDefinition(ctx.cwd).execute(toolCallId, params, signal, onUpdate, ctx);
+			const { autoResizeImages } = hostToolSettings(ctx.cwd);
+			return createReadToolDefinition(ctx.cwd, { autoResizeImages }).execute(toolCallId, params, signal, onUpdate, ctx);
 		},
 		renderCall(args, theme, ctx) {
 			const c = ctx as unknown as RenderContext;
@@ -489,7 +607,7 @@ export function registerBuiltins(pi: ExtensionAPI): void {
 			const c = ctx as unknown as RenderContext;
 			const grouped = renderGroupResult(c.toolCallId, theme, c);
 			if (grouped !== undefined) return makeText(c.lastComponent, grouped);
-			if (isPartial) return cachedText(c.lastComponent, withResultLead(theme, theme.fg("dim", "Reading...")));
+			if (isPartial) return cachedText(c.lastComponent, withResultLead(theme, theme.fg("dim", "Reading…")));
 			// CC FileReadTool/UI.tsx:152-160 — red error text on failure.
 			if (c.isError) {
 				return cachedText(c.lastComponent, withResultLead(theme, theme.fg("error", resultText(result) || "Error reading file")));
@@ -537,7 +655,10 @@ export function registerBuiltins(pi: ExtensionAPI): void {
 		parameters: bashTool.parameters,
 		renderShell: "self",
 		async execute(toolCallId, params, signal, onUpdate, ctx) {
-			return createBashToolDefinition(ctx.cwd).execute(toolCallId, params, signal, onUpdate, ctx);
+			// AUDIT §5:465 — the host creates bash with {commandPrefix, shellPath};
+			// rebuilding bare here silently dropped both.
+			const { commandPrefix, shellPath } = hostToolSettings(ctx.cwd);
+			return createBashToolDefinition(ctx.cwd, { commandPrefix, shellPath }).execute(toolCallId, params, signal, onUpdate, ctx);
 		},
 		renderCall(args, theme, ctx) {
 			const c = ctx as unknown as RenderContext;
@@ -558,22 +679,28 @@ export function registerBuiltins(pi: ExtensionAPI): void {
 				const collected = collectNonEmptyLines(output, previewLimit());
 				setLiveLineCount(c, collected.total);
 				if (collected.total === 0) {
-					return cachedText(c.lastComponent, withResultLead(theme, theme.fg("dim", "Running...")));
+					return cachedText(c.lastComponent, withResultLead(theme, theme.fg("dim", "Running…")));
 				}
 				const body = buildTailPreview(collected.lines, collected.total, theme, previewLimit(), (l) =>
 					theme.fg("dim", l),
 				);
-				return cachedText(c.lastComponent, `${withResultLead(theme, theme.fg("dim", "Running..."))}\n${indentResultBody(body)}`);
+				return cachedText(c.lastComponent, `${withResultLead(theme, theme.fg("dim", "Running…"))}\n${indentResultBody(body)}`);
 			}
 
 			// Completed.
 			const collected = collectNonEmptyLines(output);
-			// pi's bash tool throws on exit≠0 with "Command exited with code N";
-			// the error message becomes the result text. Match the LAST occurrence
-			// — command output may contain the same string (bash.js:321,348).
-			const exitMatches = [...output.matchAll(/(?:Command exited with code |exit code: )(\d+)/g)];
-			const exitCode = exitMatches.length > 0 ? Number.parseInt(exitMatches[exitMatches.length - 1]![1]!, 10) : null;
-			const failed = c.isError || (exitCode !== null && exitCode !== 0);
+			// AUDIT §5:499 — failure is signalled structurally: pi's bash tool
+			// throws on exit≠0 (bash.js:348) so the harness sets isError. Only THEN
+			// parse the code out of the appended "Command exited with code N" status
+			// (last occurrence — the command's own output may contain the same
+			// string). A successful command that merely prints "exit code: 5" must
+			// not be painted as failed.
+			const failed = c.isError;
+			let exitCode: number | null = null;
+			if (failed) {
+				const exitMatches = [...output.matchAll(/Command exited with code (\d+)/g)];
+				exitCode = exitMatches.length > 0 ? Number.parseInt(exitMatches[exitMatches.length - 1]![1]!, 10) : null;
+			}
 
 			// CC BashToolResultMessage.tsx:156 — status line only when stdout AND
 			// stderr are both empty (or on failure); with output, just the output.
@@ -638,11 +765,13 @@ export function registerBuiltins(pi: ExtensionAPI): void {
 			const c = ctx as unknown as RenderContext;
 			const grouped = renderGroupResult(c.toolCallId, theme, c);
 			if (grouped !== undefined) return makeText(c.lastComponent, grouped);
-			if (isPartial) return cachedText(c.lastComponent, withResultLead(theme, theme.fg("dim", "Searching...")));
+			if (isPartial) return cachedText(c.lastComponent, withResultLead(theme, theme.fg("dim", "Searching…")));
 			if (c.isError) {
 				return cachedText(c.lastComponent, withResultLead(theme, theme.fg("error", resultText(result) || "Error searching files")));
 			}
-			const raw = resultText(result);
+			// AUDIT §5:571 — drop the `[N matches limit reached…]` trailer before
+			// counting, or every at-limit stat is one file too high.
+			const raw = stripNoticesTrailer(resultText(result));
 			if (!raw || isEmptySentinel(raw)) {
 				return cachedText(c.lastComponent, withResultLead(theme, theme.fg("muted", "no matches")));
 			}
@@ -682,11 +811,12 @@ export function registerBuiltins(pi: ExtensionAPI): void {
 			const c = ctx as unknown as RenderContext;
 			const grouped = renderGroupResult(c.toolCallId, theme, c);
 			if (grouped !== undefined) return makeText(c.lastComponent, grouped);
-			if (isPartial) return cachedText(c.lastComponent, withResultLead(theme, theme.fg("dim", "Finding...")));
+			if (isPartial) return cachedText(c.lastComponent, withResultLead(theme, theme.fg("dim", "Finding…")));
 			if (c.isError) {
 				return cachedText(c.lastComponent, withResultLead(theme, theme.fg("error", resultText(result) || "Error finding files")));
 			}
-			const raw = resultText(result);
+			// AUDIT §5:571/:611 — the `[N results limit reached…]` trailer is not a file.
+			const raw = stripNoticesTrailer(resultText(result));
 			if (!raw || isEmptySentinel(raw)) {
 				return cachedText(c.lastComponent, withResultLead(theme, theme.fg("muted", "no files found")));
 			}
@@ -723,11 +853,12 @@ export function registerBuiltins(pi: ExtensionAPI): void {
 			const c = ctx as unknown as RenderContext;
 			const grouped = renderGroupResult(c.toolCallId, theme, c);
 			if (grouped !== undefined) return makeText(c.lastComponent, grouped);
-			if (isPartial) return cachedText(c.lastComponent, withResultLead(theme, theme.fg("dim", "Listing...")));
+			if (isPartial) return cachedText(c.lastComponent, withResultLead(theme, theme.fg("dim", "Listing…")));
 			if (c.isError) {
 				return cachedText(c.lastComponent, withResultLead(theme, theme.fg("error", resultText(result) || "Error listing directory")));
 			}
-			const raw = resultText(result);
+			// AUDIT §5:571/:611 — the `[N entries limit reached…]` trailer is not an entry.
+			const raw = stripNoticesTrailer(resultText(result));
 			if (!raw || isEmptySentinel(raw)) {
 				return cachedText(c.lastComponent, withResultLead(theme, theme.fg("muted", "empty directory")));
 			}
@@ -814,15 +945,43 @@ export function registerBuiltins(pi: ExtensionAPI): void {
 			const c = ctx as unknown as RenderContext;
 			const grouped = renderGroupCall(c.toolCallId, theme, c);
 			if (grouped !== undefined) return makeText(c.lastComponent, grouped);
-			// CC FileWriteTool/UI.tsx:128-136 — userFacingName is always "Write".
-			const summary = shortPath(c.cwd, String(args?.path ?? ""));
-			return makeText(c.lastComponent, toolHeader("Write", summary, theme, statusDot(c, theme)));
+			// AUDIT §6 P1 — CC's transcript header verb is Create for a new file and
+			// Update for an overwrite (not the tool's userFacingName "Write").
+			// Signal source: the execute-time snapshot when we have it; before
+			// execute (pending) probe existsSync once per path — the file has not
+			// been written yet so the probe is the true pre-write state. After a
+			// /resume the snapshot is gone and the file now exists either way, so
+			// fall back to the neutral "Write" instead of guessing (AUDIT §5:712).
+			const fp = String(args?.path ?? "");
+			const known = writeExistedBefore.get(c.toolCallId);
+			let verb: string;
+			if (known !== undefined) {
+				verb = known ? "Update" : "Create";
+			} else if (c.isPartial) {
+				if (c.state._wverbPath !== fp) {
+					c.state._wverbPath = fp;
+					try {
+						c.state._wverb = fp && existsSync(resolve(c.cwd, fp)) ? "Update" : "Create";
+					} catch {
+						c.state._wverb = "Write";
+					}
+				}
+				verb = String(c.state._wverb ?? "Write");
+			} else {
+				verb = "Write";
+			}
+			const summary = shortPath(c.cwd, fp);
+			return makeText(c.lastComponent, toolHeader(verb, summary, theme, statusDot(c, theme)));
 		},
 		renderResult(result, { expanded, isPartial }, theme, ctx) {
 			const c = ctx as unknown as RenderContext;
-			if (isPartial) return cachedText(c.lastComponent, withResultLead(theme, theme.fg("dim", "Writing...")));
+			if (isPartial) return cachedText(c.lastComponent, withResultLead(theme, theme.fg("dim", "Writing…")));
 
-			const existed = writeExistedBefore.get(c.toolCallId) ?? false;
+			// Three states: true = overwrite (diff), false = new file (preview),
+			// undefined = snapshot lost (resume/compaction) — degrade to the stat
+			// line instead of mis-rendering history as a new file (AUDIT §5:712).
+			const existedEntry = writeExistedBefore.get(c.toolCallId);
+			const existed = existedEntry === true;
 			const old = existed ? (writeOldContent.get(c.toolCallId) ?? "") : "";
 
 			if (c.isError) {
@@ -832,6 +991,12 @@ export function registerBuiltins(pi: ExtensionAPI): void {
 			const wargs = c.args as { path?: string; content?: string } | undefined;
 			const fp = String(wargs?.path ?? "");
 			const content = String(wargs?.content ?? "");
+
+			if (existedEntry === undefined) {
+				const lineCount = countLines(content);
+				const head = `Wrote ${theme.bold(String(lineCount))} ${lineCount === 1 ? "line" : "lines"} to ${theme.bold(shortPath(c.cwd, fp))}`;
+				return cachedText(c.lastComponent, withResultLead(theme, head));
+			}
 
 			// AUDIT §2 P0-3 — the old file was too big to snapshot; skip the diff
 			// (parseDiff on a multi-MB file is the OOM path) and just report the
@@ -883,7 +1048,10 @@ export function registerBuiltins(pi: ExtensionAPI): void {
 
 			// Existing file (or expanded new file): diff card. CC puts stat and
 			// diff body in one MessageResponse — body indents to column 5.
-			const build = (width: number): string[] => {
+			// §5:942 — render with the palette the card passes in (the ACTIVE one),
+			// not the closure capture: on theme change pi invalidates without
+			// re-running renderResult, so a captured palette would go stale.
+			const build = (width: number, pal: ResolvedPalette): string[] => {
 				const lead = withResultLead(theme, stat || "Written");
 				if (old === content) return [lead];
 				const options = {
@@ -893,8 +1061,8 @@ export function registerBuiltins(pi: ExtensionAPI): void {
 				};
 				const bodyWidth = Math.max(1, width - RESULT_INDENT.length);
 				const body = shouldUseSplit(diff, bodyWidth)
-					? renderSplit(palette, diff, bodyWidth, options)
-					: renderUnified(palette, diff, bodyWidth, options);
+					? renderSplit(pal, diff, bodyWidth, options)
+					: renderUnified(pal, diff, bodyWidth, options);
 				return [lead, ...body.map((l) => `${RESULT_INDENT}${l}`)];
 			};
 			const last = c.lastComponent as DiffCardComponent | undefined;
@@ -940,13 +1108,14 @@ export function registerBuiltins(pi: ExtensionAPI): void {
 		renderCall(args, theme, ctx) {
 			const c = ctx as unknown as RenderContext;
 			const fp = String(args?.path ?? "");
-			// CC FileEditTool/UI.tsx:57-74 — just the path, no edits-count suffix.
+			// AUDIT §6 P1 — CC's edit header verb is Update (FileEditTool
+			// userFacingName), never "Edit". Just the path, no edits-count suffix.
 			const summary = shortPath(c.cwd, fp);
-			return makeText(c.lastComponent, toolHeader("Edit", summary, theme, statusDot(c, theme)));
+			return makeText(c.lastComponent, toolHeader("Update", summary, theme, statusDot(c, theme)));
 		},
 		renderResult(result, { expanded, isPartial }, theme, ctx) {
 			const c = ctx as unknown as RenderContext;
-			if (isPartial) return cachedText(c.lastComponent, withResultLead(theme, theme.fg("dim", "Editing...")));
+			if (isPartial) return cachedText(c.lastComponent, withResultLead(theme, theme.fg("dim", "Editing…")));
 			if (c.isError) {
 				return cachedText(c.lastComponent, withResultLead(theme, theme.fg("error", resultText(result) || "Error")));
 			}
@@ -956,18 +1125,26 @@ export function registerBuiltins(pi: ExtensionAPI): void {
 			const edits = eargs?.edits ?? [];
 			const palette = getPalette(theme);
 			setDiffPalette(palette);
+			// AUDIT §5:817 — prefer pi's real unified patch (result.details.patch,
+			// generateUnifiedPatch against the actual file): true line numbers and
+			// real context. The edits[]-concatenation is only the fallback for
+			// history entries that predate details.
+			const details = (result as { details?: { patch?: string } }).details;
+			const patchDiff = typeof details?.patch === "string" ? parsePatchToDiff(details.patch) : null;
 			const oldCombined = edits.map((e) => e.oldText).join("\n");
 			const newCombined = edits.map((e) => e.newText).join("\n");
-			const diff = parseDiff(oldCombined, newCombined);
+			const diff = patchDiff ?? parseDiff(oldCombined, newCombined);
 			const lang = diffLanguage(fp);
 			const stat = renderDiffStatLine(diff.added, diff.removed);
-			const key = `edit:${c.toolCallId}:${fp}:${edits.length}:${oldCombined.length}:${newCombined.length}:${expanded ? 1 : 0}`;
+			const key = `edit:${c.toolCallId}:${fp}:${patchDiff ? `p${details!.patch!.length}` : `e${edits.length}:${oldCombined.length}:${newCombined.length}`}:${expanded ? 1 : 0}`;
 
 			// CC FileEditToolUpdatedMessage: stat + StructuredDiffList in one
 			// MessageResponse — body indents to column 5.
-			const build = (width: number): string[] => {
+			// §5:942 — use the card-supplied active palette, not the closure capture
+			// (same rationale as the write card above).
+			const build = (width: number, pal: ResolvedPalette): string[] => {
 				const lead = withResultLead(theme, stat || "Applied");
-				if (edits.length === 0) return [lead];
+				if (diff.lines.length === 0) return [lead];
 				const options = {
 					maxLines: expanded ? MAX_RENDER_LINES : MAX_PREVIEW_LINES,
 					language: lang,
@@ -975,8 +1152,8 @@ export function registerBuiltins(pi: ExtensionAPI): void {
 				};
 				const bodyWidth = Math.max(1, width - RESULT_INDENT.length);
 				const body = shouldUseSplit(diff, bodyWidth)
-					? renderSplit(palette, diff, bodyWidth, options)
-					: renderUnified(palette, diff, bodyWidth, options);
+					? renderSplit(pal, diff, bodyWidth, options)
+					: renderUnified(pal, diff, bodyWidth, options);
 				return [lead, ...body.map((l) => `${RESULT_INDENT}${l}`)];
 			};
 			const last = c.lastComponent as DiffCardComponent | undefined;
@@ -986,7 +1163,7 @@ export function registerBuiltins(pi: ExtensionAPI): void {
 			}
 			const card = new DiffCardComponent(build);
 			card.diffKey = key;
-			if (edits.length > 0) {
+			if (diff.lines.length > 0) {
 				c.state._edk = key;
 				// Warm the per-side strings the renderer queries (AUDIT §5 diff.ts:646);
 				// the old warmHighlightCache(newCombined, …) warmed only the joined new
