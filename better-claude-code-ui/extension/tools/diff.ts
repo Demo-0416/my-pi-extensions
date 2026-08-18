@@ -115,6 +115,49 @@ function tabs(text: string): string {
 	return text.replaceAll("\t", "  ");
 }
 
+/** Shared grapheme segmenter — an ECMAScript built-in, no dependency. */
+const graphemeSegmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+
+interface Cell {
+	str: string;
+	w: number;
+}
+
+/**
+ * Split an ANSI-bearing string into cells: each SGR escape becomes a
+ * zero-width cell copied verbatim; each grapheme cluster becomes a cell with
+ * its true terminal column width (visibleWidth). Iterating these cells instead
+ * of UTF-16 code units keeps surrogate pairs (emoji) intact and counts CJK as
+ * 2 columns — the UTF-16 `.length`/`text[index]` advance used to both fail to
+ * wrap wide CJK lines and split emoji surrogate pairs (AUDIT §5 diff.ts:197,248).
+ */
+function toCells(text: string): Cell[] {
+	const cells: Cell[] = [];
+	let i = 0;
+	let runStart = 0;
+	const flushPlain = (end: number): void => {
+		if (end <= runStart) return;
+		for (const { segment } of graphemeSegmenter.segment(text.slice(runStart, end))) {
+			cells.push({ str: segment, w: visibleWidth(segment) });
+		}
+	};
+	while (i < text.length) {
+		if (text[i] === "\x1b") {
+			const end = text.indexOf("m", i);
+			if (end !== -1) {
+				flushPlain(i);
+				cells.push({ str: text.slice(i, end + 1), w: 0 });
+				i = end + 1;
+				runStart = i;
+				continue;
+			}
+		}
+		i += 1;
+	}
+	flushPlain(text.length);
+	return cells;
+}
+
 function adaptiveWrapRows(width: number): number {
 	if (width >= 180) return MAX_WRAP_ROWS_WIDE;
 	if (width >= 120) return MAX_WRAP_ROWS_MED;
@@ -200,43 +243,42 @@ function normalizeShikiContrast(s: DiffSgr, ansi: string): string {
 
 function wrapAnsi(s: DiffSgr, text: string, width: number, maxRows: number, fillBg = ""): string[] {
 	if (width <= 0) return [""];
-	const plain = diffStrip(text);
-	if (plain.length <= width) {
-		const pad = width - plain.length;
+	const cells = toCells(text);
+	const plainWidth = cells.reduce((sum, c) => sum + c.w, 0);
+	if (plainWidth <= width) {
+		const pad = width - plainWidth;
 		return pad > 0 ? [text + fillBg + " ".repeat(pad) + (fillBg === "" ? "" : D_RST)] : [text];
 	}
+	// Advance by cells (grapheme clusters + zero-width ANSI escapes), tracking
+	// display columns. UTF-16 code-unit advance used to split emoji surrogate
+	// pairs at wrap points and mis-measure CJK width (AUDIT §5 diff.ts:197,248).
 	const rows: string[] = [];
 	let row = "";
 	let visible = 0;
-	let index = 0;
 	let onLastRow = false;
 	let effectiveWidth = width;
-	while (index < text.length) {
+	let ci = 0;
+	while (ci < cells.length) {
 		if (!onLastRow && rows.length >= maxRows - 1) {
 			onLastRow = true;
 			effectiveWidth = width > 2 ? width - 1 : width;
 		}
-		if (text[index] === "\x1b") {
-			const end = text.indexOf("m", index);
-			if (end !== -1) {
-				row += text.slice(index, end + 1);
-				index = end + 1;
-				continue;
-			}
+		const cell = cells[ci]!;
+		if (cell.w === 0) {
+			// Zero-width (ANSI escape): copy verbatim, no wrap decision.
+			row += cell.str;
+			ci += 1;
+			continue;
 		}
-		if (visible >= effectiveWidth) {
+		if (visible + cell.w > effectiveWidth) {
 			if (onLastRow) {
+				// Anything visible still to come → truncation marker; else pad out.
 				let hasMore = false;
-				for (let scan = index; scan < text.length; scan += 1) {
-					if (text[scan] === "\x1b") {
-						const end = text.indexOf("m", scan);
-						if (end !== -1) {
-							scan = end;
-							continue;
-						}
+				for (let scan = ci; scan < cells.length; scan += 1) {
+					if (cells[scan]!.w > 0) {
+						hasMore = true;
+						break;
 					}
-					hasMore = true;
-					break;
 				}
 				if (hasMore && width > 2) row += `${D_RST}${s.FG_DIM}›${D_RST}`;
 				else row += fillBg + " ".repeat(Math.max(0, width - visible)) + D_RST;
@@ -244,7 +286,7 @@ function wrapAnsi(s: DiffSgr, text: string, width: number, maxRows: number, fill
 				return rows;
 			}
 			const state = ansiState(row);
-			rows.push(row + D_RST);
+			rows.push(row + fillBg + " ".repeat(Math.max(0, width - visible)) + D_RST);
 			row = state + fillBg;
 			visible = 0;
 			if (rows.length >= maxRows - 1) {
@@ -252,9 +294,9 @@ function wrapAnsi(s: DiffSgr, text: string, width: number, maxRows: number, fill
 				effectiveWidth = width > 2 ? width - 1 : width;
 			}
 		}
-		row += text[index] ?? "";
-		visible += 1;
-		index += 1;
+		row += cell.str;
+		visible += cell.w;
+		ci += 1;
 	}
 	if (row.length > 0 || rows.length === 0) {
 		rows.push(row + fillBg + " ".repeat(Math.max(0, width - visible)) + D_RST);
