@@ -25,6 +25,16 @@ function hexToRgb(hex: string): Rgb {
 	return rgb(parseInt(h.slice(0, 2), 16), parseInt(h.slice(2, 4), 16), parseInt(h.slice(4, 6), 16));
 }
 
+/** Linear blend of two colors; t=0 → a, t=1 → b. */
+function mixRgb(a: Rgb, b: Rgb, t: number): Rgb {
+	const c = (x: number, y: number) => Math.round(x + (y - x) * t);
+	return rgb(c(a.r, b.r), c(a.g, b.g), c(a.b, b.b));
+}
+
+/** Approx terminal canvas per scheme, for muting fills toward the background. */
+const CANVAS_DARK: Rgb = rgb(30, 30, 30); // ≈ claude-code-dark export.pageBg #1E1E1E
+const CANVAS_LIGHT: Rgb = rgb(255, 255, 255);
+
 /** A palette value: a 24-bit hex string, or a basic ANSI index (0-15). */
 export type ColorValue = string | number;
 
@@ -210,6 +220,25 @@ function buildPalette(
 		const parsed = parseAnsiRgb(ansi);
 		return parsed ? rgbToHex(parsed) : fallback;
 	};
+	// pi exposes a single foreground color per diff side (toolDiffAdded /
+	// toolDiffRemoved). If we map both the full-line bg and the word-level bg to
+	// that one token, the word highlight (BG_*_W painted over BG_* in
+	// diff.ts:645-646) becomes invisible on any non-CC truecolor theme. CC's
+	// model is a muted line wash + a vivid word fill, so derive the pair: the
+	// token is the vivid word color, the line bg is that color muted toward the
+	// scheme's canvas. Only when the token is unset do we fall back to CC's own
+	// already-distinct hardcoded pair.
+	const canvas = scheme === "light" ? CANVAS_LIGHT : CANVAS_DARK;
+	// Light schemes read better with a lighter wash; dark schemes with a darker one.
+	const washT = scheme === "light" ? 0.7 : 0.72;
+	const diffPair = (token: string, lineFallback: string, wordFallback: string): { lineBg: ColorValue; word: ColorValue } => {
+		const ansi = tokenFg(token);
+		const parsed = ansi ? parseAnsiRgb(ansi) : undefined;
+		if (!parsed) return { lineBg: lineFallback, word: wordFallback };
+		return { lineBg: rgbToHex(mixRgb(parsed, canvas, washT)), word: rgbToHex(parsed) };
+	};
+	const added = diffPair("toolDiffAdded", "#225C2B", "#38A660");
+	const removed = diffPair("toolDiffRemoved", "#7A2936", "#B3596B");
 	const fallback: CcPalette = {
 		claude: tok("accent", "#D77757"),
 		claudeShimmer: tok("customMessageLabel", "#EB9F7F"),
@@ -223,10 +252,10 @@ function buildPalette(
 		success: tok("success", "#4EBA65"),
 		error: tok("error", "#FF6B80"),
 		warning: tok("warning", "#FFC107"),
-		diffAddedBg: tok("toolDiffAdded", "#225C2B"),
-		diffRemovedBg: tok("toolDiffRemoved", "#7A2936"),
-		diffAddedWord: tok("toolDiffAdded", "#38A660"),
-		diffRemovedWord: tok("toolDiffRemoved", "#B3596B"),
+		diffAddedBg: added.lineBg,
+		diffRemovedBg: removed.lineBg,
+		diffAddedWord: added.word,
+		diffRemovedWord: removed.word,
 		userMsgBg: tok("userMessageBg", "#373737"),
 		selectionBg: tok("selectedBg", "#264F78"),
 		bashMsgBg: tok("toolSuccessBg", "#413C41"),
