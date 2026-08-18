@@ -177,16 +177,43 @@ function packNames(names: readonly string[], width: number, maxRows: number): st
 
 export class BannerComponent {
 	private revealWidth: number | undefined;
+	// Render cache: the header is re-rendered every frame by the TUI (tui.js
+	// LayoutContainer.render iterates children with no caching), and the box is
+	// static once the session is up — recomputing borders/packNames/centering
+	// each frame during streaming is pure waste. Cache keyed on every input that
+	// affects output; invalidate() drops it (AUDIT §5 banner.ts:176).
+	private cacheKey: string | undefined;
+	private cacheTheme: Theme | undefined;
+	private cacheLines: string[] | undefined;
 
 	constructor(private readonly info: BannerInfo) {}
 
 	setRevealWidth(width: number | undefined): void {
+		if (width === this.revealWidth) return;
 		this.revealWidth = width;
+		this.invalidate();
 	}
 
-	invalidate(): void {}
+	invalidate(): void {
+		this.cacheKey = undefined;
+		this.cacheTheme = undefined;
+		this.cacheLines = undefined;
+	}
 
 	render(width: number, theme: Theme): string[] {
+		// Key on every input the output depends on. model/title/resumed are
+		// dynamic getters; a mode/session change flips the key and recomputes.
+		const key = [
+			width,
+			this.revealWidth ?? -1,
+			typeof theme.getColorMode === "function" ? theme.getColorMode() : "",
+			this.info.model() ?? "",
+			this.info.title() ?? "",
+			this.info.resumed ?? "",
+		].join(" ");
+		if (this.cacheLines && this.cacheKey === key && this.cacheTheme === theme) {
+			return this.cacheLines;
+		}
 		const rows =
 			width >= FULL_MIN_WIDTH
 				? this.renderWide(width, theme)
@@ -194,8 +221,11 @@ export class BannerComponent {
 					? this.renderBoxed(width, theme)
 					: this.renderCompact(width, theme);
 		const reveal = this.revealWidth;
-		if (reveal === undefined) return rows;
-		return rows.map((row) => truncateToWidth(row, reveal, ""));
+		const out = reveal === undefined ? rows : rows.map((row) => truncateToWidth(row, reveal, ""));
+		this.cacheKey = key;
+		this.cacheTheme = theme;
+		this.cacheLines = out;
+		return out;
 	}
 
 	private border(theme: Theme, text: string): string {
