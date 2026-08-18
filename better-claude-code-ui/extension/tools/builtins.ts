@@ -32,7 +32,7 @@ import {
 	createWriteToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import { Text, type Component } from "@earendil-works/pi-tui";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { resolve, relative } from "node:path";
 import {
 	DiffCardComponent,
@@ -76,6 +76,15 @@ const MAX_COMMAND_DISPLAY_CHARS = 160;
 
 // CC FileWriteTool/UI.tsx:26.
 const WRITE_PREVIEW_LINES = 10;
+
+// AUDIT §2 P0-3 — cap the pre-write snapshot read. pi truncates bash stdout at
+// the tool layer (truncate.js:10) but the write old-content path does raw
+// readFileSync with no ceiling; a 20MB kitex_gen .go = 20MB resident + parseDiff
+// superlinear intermediates. Above this the diff degrades to "Wrote N lines".
+const MAX_DIFF_FILE_BYTES = 1_048_576; // 1 MiB
+// Bound the per-session snapshot maps so a long session with many writes does
+// not accumulate one old-file copy per toolCallId forever (AUDIT §5:670).
+const MAX_WRITE_SNAPSHOTS = 64;
 
 const PREVIEW_LINES = 8;
 const EXTRA_DETAIL_LINES = 12000;
@@ -662,16 +671,33 @@ export function registerBuiltins(pi: ExtensionAPI): void {
 	 * can diff even if renderCall was never called (resume, compaction).
 	 *
 	 * Lifetime: populated in execute, read across any number of re-renders
-	 * (expand toggles re-run renderCall/renderResult — deleting eagerly made
-	 * existing files flip to "Create" + whole-file-added on the second render),
-	 * and cleared per session. toolCallIds are unique per session, so no
-	 * cross-session staleness.
+	 * (expand toggles re-run renderCall/renderResult AFTER tool_execution_end —
+	 * verified against pi interactive-mode.js:2671-2678 + setExpanded →
+	 * updateDisplay → renderResult — so we must NOT clear on tool_execution_end,
+	 * or an existing file flips to "Create" + whole-file-added on the second
+	 * render). Cleared per session; additionally bounded to MAX_WRITE_SNAPSHOTS
+	 * entries (FIFO evict oldest) so a long session cannot grow unbounded.
+	 * toolCallIds are unique per session, so no cross-session staleness.
 	 */
 	const writeOldContent = new Map<string, string>();
 	const writeExistedBefore = new Map<string, boolean>();
+	// toolCallIds whose old file exceeded MAX_DIFF_FILE_BYTES: skip the diff and
+	// render "Wrote N lines" instead of reading the whole file into memory.
+	const writeOversize = new Set<string>();
+	/** Insert into a snapshot map, evicting the oldest key past the cap. */
+	const boundSnapshots = (): void => {
+		while (writeOldContent.size > MAX_WRITE_SNAPSHOTS) {
+			const oldest = writeOldContent.keys().next().value;
+			if (oldest === undefined) break;
+			writeOldContent.delete(oldest);
+			writeExistedBefore.delete(oldest);
+			writeOversize.delete(oldest);
+		}
+	};
 	pi.on("session_start", async () => {
 		writeOldContent.clear();
 		writeExistedBefore.clear();
+		writeOversize.clear();
 	});
 
 	const writeTool = createWriteToolDefinition(cwd);
@@ -686,15 +712,25 @@ export function registerBuiltins(pi: ExtensionAPI): void {
 			const fullPath = fp ? resolve(ctx.cwd, fp) : "";
 			const existedBefore = !!fullPath && existsSync(fullPath);
 			writeExistedBefore.set(toolCallId, existedBefore);
+			writeOversize.delete(toolCallId);
 			if (existedBefore && fullPath) {
 				try {
-					writeOldContent.set(toolCallId, readFileSync(fullPath, "utf-8"));
+					// Probe size before reading: a huge old file would otherwise
+					// sit resident three ways (map + build closure + del lines) and
+					// feed parseDiff's superlinear intermediates (AUDIT §2 P0-3).
+					if (statSync(fullPath).size > MAX_DIFF_FILE_BYTES) {
+						writeOversize.add(toolCallId);
+						writeOldContent.set(toolCallId, "");
+					} else {
+						writeOldContent.set(toolCallId, readFileSync(fullPath, "utf-8"));
+					}
 				} catch {
 					writeOldContent.set(toolCallId, "");
 				}
 			} else {
 				writeOldContent.set(toolCallId, "");
 			}
+			boundSnapshots();
 			return createWriteToolDefinition(ctx.cwd).execute(toolCallId, params, signal, onUpdate, ctx);
 		},
 		renderCall(args, theme, ctx) {
@@ -719,6 +755,16 @@ export function registerBuiltins(pi: ExtensionAPI): void {
 			const wargs = c.args as { path?: string; content?: string } | undefined;
 			const fp = String(wargs?.path ?? "");
 			const content = String(wargs?.content ?? "");
+
+			// AUDIT §2 P0-3 — the old file was too big to snapshot; skip the diff
+			// (parseDiff on a multi-MB file is the OOM path) and just report the
+			// line count, matching CC's "Wrote N lines to <path>".
+			if (writeOversize.has(c.toolCallId)) {
+				const lineCount = countLines(content);
+				const head = `Wrote ${theme.bold(String(lineCount))} ${lineCount === 1 ? "line" : "lines"} to ${theme.bold(shortPath(c.cwd, fp))}`;
+				return cachedText(c.lastComponent, withResultLead(theme, head));
+			}
+
 			const palette = getPalette(theme);
 			setDiffPalette(palette);
 			const diff = parseDiff(old, content);
