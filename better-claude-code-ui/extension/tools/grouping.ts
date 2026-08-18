@@ -12,6 +12,7 @@
 import type { ExtensionAPI, Theme } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { existsSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
 import {
 	classifyToolCall,
 	collapsedSummary,
@@ -53,6 +54,10 @@ export interface GroupInfo {
 	hintState: HintState;
 	/** The leader's invalidate callback, so the group refreshes on member updates. */
 	invalidator: (() => void) | undefined;
+	/** Archived groups only: every member's last render invalidate, kept so a
+	 *  later `/cc-tools group off` can push hidden PAST-turn members to redraw
+	 *  as standalone rows (AUDIT §5:372 — toggling off left them blank forever). */
+	memberInvalidators?: Map<string, () => void>;
 }
 
 /**
@@ -408,16 +413,23 @@ function archiveCurrentGroups(): void {
 	for (const g of groups) {
 		// Only archive groups that actually collapsed (≥1 leader summary worth
 		// keeping). Strip heavy per-member results so nothing large persists.
+		// Keep each member's render invalidate (a closure over a component that
+		// lives in the chat container anyway) so `/cc-tools group off` can push
+		// past-turn hidden members to redraw as standalone rows (AUDIT §5:372).
+		const invalidators = new Map<string, () => void>();
 		for (const m of g.members) {
 			m.result = undefined;
 			m.status = m.status === "pending" ? "success" : m.status;
 			// Cap retained arg strings — glance lines only need a short summary, and
 			// a bash command / long path could otherwise pin megabytes per turn.
 			m.args = capArgs(m.args);
+			const inv = toolInvalidators.get(m.toolCallId);
+			if (inv) invalidators.set(m.toolCallId, inv);
 		}
 		g.running = false;
 		g.active = false;
 		g.invalidator = undefined;
+		g.memberInvalidators = invalidators;
 		clearHintTimer(g.hintState);
 		archivedGroups.push(g);
 	}
@@ -448,8 +460,9 @@ let settingsCache: { value: boolean; timestamp: number } | null = null;
 function readGroupToolCalls(): boolean {
 	// Default ON; only an explicit `false` disables grouping.
 	let enabled = true;
-	const home = process.env.HOME ?? "";
-	const paths = [`${process.cwd()}/.pi/settings.json`, `${home}/.pi/settings.json`];
+	// AUDIT §5:347 — commands.ts WRITES the toggle via homedir(); reading it via
+	// process.env.HOME broke the round-trip when HOME is unset. Same source both ways.
+	const paths = [`${process.cwd()}/.pi/settings.json`, `${homedir()}/.pi/settings.json`];
 	for (const path of paths) {
 		try {
 			if (!path || !existsSync(path)) continue;
@@ -460,6 +473,33 @@ function readGroupToolCalls(): boolean {
 		}
 	}
 	return enabled;
+}
+
+/**
+ * Push every row this module has ever influenced to re-render — current-turn
+ * tools (leaders AND hidden members), current groups, and archived past-turn
+ * groups. Called by /cc-tools group on|off so the toggle takes effect on
+ * screen immediately: hidden members redraw as standalone rows when grouping
+ * turns off, and leaders drop/regain their summary row (AUDIT §5:372,
+ * commands.ts:88 — the toggle used to leave the transcript looking unchanged).
+ */
+export function repaintGroupedRows(): void {
+	const seen = new Set<() => void>();
+	const push = (inv: (() => void) | undefined): void => {
+		if (!inv || seen.has(inv)) return;
+		seen.add(inv);
+		try {
+			inv();
+		} catch {
+			/* noop */
+		}
+	};
+	for (const inv of toolInvalidators.values()) push(inv);
+	for (const g of groups) push(g.invalidator);
+	for (const g of archivedGroups) {
+		push(g.invalidator);
+		if (g.memberInvalidators) for (const inv of g.memberInvalidators.values()) push(inv);
+	}
 }
 
 /** Whether collapsed tool grouping is enabled (reads settings.json, 2s cache). */
@@ -702,8 +742,9 @@ function statusDot(status: ToolStatus, theme: Theme): string {
 		case "error":
 			return theme.fg("error", BLACK_CIRCLE);
 		default:
-			// CC ToolUseLoader: while unresolved, default color, blink on/off.
-			return blinkPhase ? BLACK_CIRCLE : " ";
+			// CC ToolUseLoader: while unresolved, dim, blink on/off. AUDIT §5:577 —
+			// no foreground here read one notch brighter than every other pending dot.
+			return blinkPhase ? theme.fg("dim", BLACK_CIRCLE) : " ";
 	}
 }
 
@@ -858,7 +899,9 @@ function toolLabel(name: string): string {
 		case "bash":
 			return "Bash";
 		case "grep":
-			return "Grep";
+			// AUDIT §5:701 — the standalone row calls this tool "Search" (CC
+			// userFacingName); the expanded glance line must use the same name.
+			return "Search";
 		case "find":
 			return "Find";
 		case "ls":

@@ -11,7 +11,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { setExtraDetail } from "./tools/builtins.js";
-import { bustGroupingSettingsCache } from "./tools/grouping.js";
+import { bustGroupingSettingsCache, repaintGroupedRows } from "./tools/grouping.js";
 
 const SETTINGS_KEY_GROUP = "groupToolCalls";
 const SETTINGS_KEY_EXTRA_DETAIL = "ccToolsExtraDetail";
@@ -97,6 +97,11 @@ export function registerCommands(pi: ExtensionAPI): void {
 		writeSettingsKey(SETTINGS_KEY_GROUP, v);
 		// grouping.ts caches the setting for 2s; bust it so the toggle is instant.
 		bustGroupingSettingsCache();
+		// AUDIT §5:372 / commands.ts:88 — the toggle used to change only future
+		// renders: hidden member rows stayed blank and leaders kept stale
+		// summaries. Push every grouped row (current turn + archived turns) to
+		// re-render under the new setting.
+		repaintGroupedRows();
 	};
 
 	// /cc-tools — control tool UI: grouping, extra detail.
@@ -111,7 +116,7 @@ export function registerCommands(pi: ExtensionAPI): void {
 					ctx.ui.notify(
 						[
 							`Tool grouping: ${groupingEnabled ? "on" : "off"}`,
-							`Extra detail: ${extraDetail ? "on" : "off"} (ctrl+shift+o)`,
+							`Extra detail: ${extraDetail ? "on" : "off"} (ctrl+shift+o, or alt+o on legacy terminals)`,
 							"  /cc-tools group on|off|toggle",
 							"  /cc-tools detail on|off|toggle",
 						].join("\n"),
@@ -171,11 +176,20 @@ export function registerCommands(pi: ExtensionAPI): void {
 	});
 
 	// Ctrl+Shift+O — toggle extra detail (preview line cap 8 → 12000).
+	// AUDIT §5 commands.ts:180 — ctrl+shift+o only exists as a distinct key under
+	// the Kitty keyboard protocol; legacy terminals send plain ^O for it, which pi
+	// consumes as its built-in Ctrl+O expand. Register alt+o (ESC-prefixed, decodable
+	// everywhere) as a fallback binding for the same toggle.
+	const detailToggle = async (ctx: Parameters<Parameters<typeof pi.registerShortcut>[1]["handler"]>[0]) => {
+		setDetail(!extraDetail);
+		if (ctx.hasUI) ctx.ui.notify(`Extra detail: ${extraDetail ? "on" : "off"}`, "info");
+	};
 	pi.registerShortcut("ctrl+shift+o", {
 		description: "Toggle CC tool extra-detail mode",
-		handler: async (ctx) => {
-			setDetail(!extraDetail);
-			if (ctx.hasUI) ctx.ui.notify(`Extra detail: ${extraDetail ? "on" : "off"}`, "info");
-		},
+		handler: detailToggle,
+	});
+	pi.registerShortcut("alt+o", {
+		description: "Toggle CC tool extra-detail mode (fallback for terminals without the Kitty keyboard protocol)",
+		handler: detailToggle,
 	});
 }
