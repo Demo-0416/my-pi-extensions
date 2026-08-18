@@ -742,11 +742,19 @@ export function registerBuiltins(pi: ExtensionAPI): void {
 				body += `\n${italic(theme.fg("dim", "(ctrl+o to expand)"))}`;
 				const head = `Wrote ${theme.bold(String(lineCount))} ${lineCount === 1 ? "line" : "lines"} to ${theme.bold(shortPath(c.cwd, fp))}`;
 				// Warm shiki asynchronously; re-render with highlight when ready.
-				c.state._wwk = key;
-				void warmHighlightCache(shown.join("\n"), lang, shikiThemeForPalette(palette)).then(() => {
-					if (c.state._wwk !== key) return;
-					c.invalidate();
-				});
+				// Only attach the .then(invalidate) if this component has not warmed
+				// this key yet — otherwise c.invalidate() re-runs renderResult, which
+				// re-attaches another .then, forming a microtask self-loop that freezes
+				// the TUI (AUDIT §2 P0-2). `key` is not enough on its own because pi
+				// re-runs renderResult on the same key (every frame); track "warmed"
+				// in state so the guard survives re-renders.
+				if (c.state._wwkDone !== key) {
+					c.state._wwkDone = key;
+					void warmHighlightCache(shown.join("\n"), lang, shikiThemeForPalette(palette)).then(() => {
+						if (c.state._wwkDone !== key) return;
+						c.invalidate();
+					});
+				}
 				return cachedText(c.lastComponent, `${withResultLead(theme, head)}\n${indentResultBody(body)}`);
 			}
 
