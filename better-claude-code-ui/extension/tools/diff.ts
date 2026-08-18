@@ -441,9 +441,12 @@ export async function warmHighlightCache(
 	try {
 		const specifier = "@shikijs/cli";
 		const loaded = (await import(specifier)) as unknown;
-		const codeToAnsi = (loaded as { codeToAnsi?: unknown }).codeToAnsi;
-		if (typeof codeToAnsi !== "function") return touchCache(key, code.split("\n"));
-		const render = codeToAnsi as (source: string, lang: string, themeName: string) => Promise<string>;
+		// @shikijs/cli exports `codeToANSI` (all-caps ANSI), not `codeToAnsi` —
+		// the misspelling made this branch always fall through to the plain-text
+		// split, so syntax highlighting never ran (AUDIT §4 diff.ts:444).
+		const codeToANSI = (loaded as { codeToANSI?: unknown }).codeToANSI;
+		if (typeof codeToANSI !== "function") return touchCache(key, code.split("\n"));
+		const render = codeToANSI as (source: string, lang: string, themeName: string) => Promise<string>;
 		const s = diffSgr(activeSgrPalette);
 		const ansi = normalizeShikiContrast(s, await render(code, language, theme));
 		const body = ansi.endsWith("\n") ? ansi.slice(0, -1) : ansi;
