@@ -692,6 +692,9 @@ export function getGroupRenderInfo(toolCallId: string, expanded: boolean): Group
 // CC figures.ts: BLACK_CIRCLE = darwin ? '⏺' : '●'.
 const BLACK_CIRCLE = process.platform === "darwin" ? "⏺" : "●";
 
+// AUDIT §5:722 — glance-line bash command budget. Truncation appends `…`.
+const GLANCE_COMMAND_MAX = 72;
+
 function statusDot(status: ToolStatus, theme: Theme): string {
 	switch (status) {
 		case "success":
@@ -875,8 +878,14 @@ function toolSummary(m: ToolRecord, displayPath: (p: string) => string): string 
 	switch (m.toolName) {
 		case "read":
 			return sp(args.path ?? args.file_path);
-		case "bash":
-			return typeof args.command === "string" ? args.command.replace(/\s+/g, " ").slice(0, 72) : "";
+		case "bash": {
+			if (typeof args.command !== "string") return "";
+			// AUDIT §5:722 — collapse whitespace, then truncate WITH an ellipsis so a
+			// long command reads as truncated, not as if the command itself ended at
+			// 72 chars. (Old code sliced to 72 with no marker.)
+			const flat = args.command.replace(/\s+/g, " ").trim();
+			return flat.length > GLANCE_COMMAND_MAX ? `${flat.slice(0, GLANCE_COMMAND_MAX - 1)}…` : flat;
+		}
 		case "grep":
 		case "find": {
 			const pattern = typeof args.pattern === "string" ? `"${args.pattern}"` : "";
