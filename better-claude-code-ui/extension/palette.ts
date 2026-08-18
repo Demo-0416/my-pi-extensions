@@ -135,13 +135,28 @@ const DIFF_CHROME_LIGHT: DiffChrome = {
 /** Resolve a pi theme name to a CC palette key, or undefined when not a CC theme. */
 export function paletteKeyForThemeName(themeName: string | undefined): ThemeKey | undefined {
 	if (!themeName) return undefined;
-	const stripped = themeName.replace(/^claude-code-/, "");
-	if (stripped in PALETTES) return stripped as ThemeKey;
+	// Only the shipped CC themes are `claude-code-*`. Requiring the prefix keeps
+	// pi's built-in "dark"/"light" (theme.js getBuiltinThemes) — and any bare pi
+	// theme named "dark"/"light-…" — out of the CC board: without the prefix
+	// gate, "dark".replace(/^claude-code-/,"") is a no-op → "dark" in PALETTES →
+	// pi's neutral built-in gets painted with CC's orange palette.
+	const prefix = "claude-code-";
+	if (!themeName.startsWith(prefix)) return undefined;
+	const stripped = themeName.slice(prefix.length);
+	// hasOwnProperty, not `in`: `in` walks the prototype chain, so a theme named
+	// "claude-code-toString"/"claude-code-constructor" would falsely match.
+	if (Object.prototype.hasOwnProperty.call(PALETTES, stripped)) return stripped as ThemeKey;
 	return undefined;
 }
 
 export function isLightThemeName(themeName: string | undefined): boolean {
-	return !!themeName && themeName.includes("light");
+	if (!themeName) return false;
+	// A CC theme's scheme is authoritative from its key (light*/dark* families).
+	const key = paletteKeyForThemeName(themeName);
+	if (key !== undefined) return key.startsWith("light");
+	// Otherwise match a whole "light" segment (word boundary), not a bare
+	// substring — so "moonlight"/"highlight"/"delightful" don't read as light.
+	return /(?:^|[-_ ])light(?:[-_ ]|$)/u.test(themeName);
 }
 
 export interface ResolvedPalette {
