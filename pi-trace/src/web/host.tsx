@@ -578,6 +578,7 @@ function TraceApp() {
               onToggleTurn={toggleTurn}
               collapsedAssistants={collapsedAssistants}
               onToggleAssistant={toggleAssistant}
+              sessionId={sessionId ?? undefined}
             />
           </div>
         </>

@@ -72,6 +72,8 @@ export interface TraceRecord {
   toolCalls?: Array<{ callId: string; name: string; argsRaw: string }>;
   /** user：消息来源（对齐 dsh messageSource / Source tab）。 */
   source?: unknown;
+  /** 该记录在 session JSONL 中的行号（历史会话按需读原文用）。 */
+  sourceLine?: number;
 }
 
 /** 一个 turn = 一次 LLM 响应 + 其工具调用（DESIGN.md 3.3）。 */

@@ -17,7 +17,7 @@ import { isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { TraceSession } from './model.ts';
 import { SESSIONS_DIR, portFilePath, ensureTracesDir } from './store.ts';
-import { listSessions, loadSession, reconstructFromPath } from './session-loader.ts';
+import { listSessions, loadSession, reconstructFromPath, readLineFromFile, extractFullContent } from './session-loader.ts';
 import { computeStats } from './stats.ts';
 import type { Collector, LiveEvent } from './collector.ts';
 
@@ -139,6 +139,50 @@ export class TraceServer {
         return;
       }
       this.handleSse(id, res);
+      return;
+    }
+
+    if (pathname.startsWith('/api/record/')) {
+      // /api/record/:sessionId/:recordId/full?field=xxx
+      const parts = pathname.split('/');
+      if (parts.length >= 5 && parts[4] === 'full') {
+        const sessionId = decodeURIComponent(parts[2] ?? '');
+        const recordId = decodeURIComponent(parts[3] ?? '');
+        const field = url.searchParams.get('field') ?? 'fullText';
+        // live 会话：从 collector 的 fullContent Map 读。
+        const collector = this.collectors.get(sessionId);
+        if (collector) {
+          const content = collector.getFullContent(recordId, field);
+          if (content !== null) {
+            sendJson(res, 200, { content });
+            return;
+          }
+        }
+        // 历史会话：从 JSONL 按 sourceLine 读原文。
+        const session = this.resolveSession(sessionId);
+        if (session === null) {
+          sendJson(res, 404, { error: 'session not found' });
+          return;
+        }
+        const record = session.records.find(r => r.id === recordId);
+        if (record?.sourceLine === undefined || !session.sessionFile) {
+          sendJson(res, 404, { error: 'record not found or no source line' });
+          return;
+        }
+        const line = readLineFromFile(session.sessionFile, record.sourceLine);
+        if (line === null) {
+          sendJson(res, 404, { error: 'line not found' });
+          return;
+        }
+        const content = extractFullContent(line, field);
+        if (content === null) {
+          sendJson(res, 404, { error: 'field not available in session file' });
+          return;
+        }
+        sendJson(res, 200, { content });
+        return;
+      }
+      sendJson(res, 404, { error: 'unknown record route' });
       return;
     }
 

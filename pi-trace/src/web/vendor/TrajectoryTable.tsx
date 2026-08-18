@@ -387,6 +387,8 @@ export interface TrajectoryTableProps {
   inspectCallId?: string | null
   /** Acknowledge a consumed (or unresolvable) inspect request. */
   onInspectApplied?: (() => void) | undefined
+  /** Session ID for Show full API calls. */
+  sessionId?: string
 }
 
 /** Request-inspector fields shared by ordinary generation and compaction. */
@@ -879,6 +881,28 @@ function parentRecords(
     )
   }
   return { ...(message === undefined ? {} : { message }), ...(tool === undefined ? {} : { tool }) }
+}
+
+function isTruncated(text: string | undefined | null): boolean {
+  return text !== undefined && text !== null && text.endsWith('…\u003ctruncated\u003e')
+}
+
+/** 根据记录类型返回可展开的字段名，无可展开字段返回 null。 */
+function expandableField(record: TableRecord): string | null {
+  const cell = record.cell
+  if (cell.kind === 'user' || cell.kind === 'context') {
+    return isTruncated(cell.inputDetail) ? 'fullText' : null
+  }
+  if (cell.kind === 'message') {
+    return isTruncated(cell.outputDetail) ? 'fullText' : null
+  }
+  if (cell.kind === 'tool') {
+    return isTruncated(cell.outputDetail) ? 'result' : null
+  }
+  if (cell.kind === 'system') {
+    return isTruncated(cell.previousPromptDetail) ? 'prompt' : null
+  }
+  return null
 }
 
 function markdownSource(record: TableRecord): string | undefined {
@@ -1712,11 +1736,14 @@ export function TrajectoryTable({
   onToggleAssistant,
   inspectCallId = null,
   onInspectApplied,
+  sessionId,
 }: TrajectoryTableProps) {
   const [selectedRecordId, setSelectedRecordId] = useState<string | null>(null)
   const [selectedRequest, setSelectedRequest] = useState<SelectedRequest | null>(null)
   const [activeTab, setActiveTab] = useState<DetailTab>('overview')
   const [thinkingExpanded, setThinkingExpanded] = useState(false)
+  const [fullContent, setFullContent] = useState<{ field: string; content: string } | null>(null)
+  const [fullContentLoading, setFullContentLoading] = useState(false)
   const [detailsWidth, setDetailsWidth] = useState<number | null>(null)
   const [toolRequestOffset, setToolRequestOffset] = useState<number | null>(null)
   const detailsResizeDrag = useRef<DetailsResizeDrag | null>(null)
@@ -3066,8 +3093,43 @@ export function TrajectoryTable({
             {!promptSelected && selected !== undefined && activeTab === 'timing' && (
               <RecordTiming record={selected} />
             )}
+            {!promptSelected && selected !== undefined && sessionId && expandableField(selected) !== null && (
+              <button
+                className={css.showFullButton}
+                disabled={fullContentLoading}
+                onClick={async () => {
+                  const field = expandableField(selected)!
+                  setFullContentLoading(true)
+                  try {
+                    const recordId = trajectoryRecordId(selected.cell)
+                    const res = await fetch(`/api/record/${encodeURIComponent(sessionId)}/${encodeURIComponent(recordId)}/full?field=${field}`)
+                    if (res.ok) {
+                      const data = await res.json()
+                      setFullContent({ field, content: data.content })
+                    }
+                  } catch {
+                    // 网络错误时静默失败
+                  } finally {
+                    setFullContentLoading(false)
+                  }
+                }}
+              >
+                {fullContentLoading ? 'Loading…' : 'Show full content'}
+              </button>
+            )}
           </div>
         </aside>
+      )}
+      {fullContent !== null && (
+        <div className={css.fullContentOverlay} onClick={() => setFullContent(null)}>
+          <div className={css.fullContentModal} onClick={e => e.stopPropagation()}>
+            <div className={css.fullContentHeader}>
+              <span>Full content — {fullContent.field}</span>
+              <button className={css.fullContentClose} onClick={() => setFullContent(null)}>✕</button>
+            </div>
+            <pre className={css.fullContentPre}>{fullContent.content}</pre>
+          </div>
+        </div>
       )}
     </div>
   )

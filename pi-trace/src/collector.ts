@@ -203,6 +203,22 @@ export class Collector {
   private turnOffset = 0;
   /** 最近一次 input 事件的来源（归因到下一条 user 记录）。 */
   private lastInputSource: unknown = null;
+  /** 被截断字段的原文（recordId:field → 原文），供前端 Show full 展开。 */
+  private readonly fullContent = new Map<string, string>();
+
+  /** 截断字符串并存原文，返回截断后的值。 */
+  private truncateAndStore(recordId: string, field: string, content: string): string {
+    const truncated = truncateField(content) as string;
+    if (content !== truncated) {
+      this.fullContent.set(`${recordId}:${field}`, content);
+    }
+    return truncated;
+  }
+
+  /** 取被截断字段的原文（live 会话）。 */
+  getFullContent(recordId: string, field: string): string | null {
+    return this.fullContent.get(`${recordId}:${field}`) ?? null;
+  }
 
   constructor(session: TraceSession) {
     this.session = session;
@@ -375,8 +391,8 @@ export class Collector {
       if (existing !== undefined) {
         // 闭合进行中的记录：补全字段后落盘 + 广播。
         existing.text = oneLine(textFromContent(message.content));
-        existing.fullText = truncateField(textFromContent(message.content)) as string;
-        existing.thinking = truncateField(thinkingFromContent(message.content)) as string || undefined;
+        existing.fullText = this.truncateAndStore(existing.id, 'fullText', textFromContent(message.content));
+        existing.thinking = this.truncateAndStore(existing.id, 'thinking', thinkingFromContent(message.content)) || undefined;
         existing.toolCalls = toolCallsFromContent(message.content);
         existing.isError = message.stopReason === 'error';
         existing.model = start?.model ?? message.model;
@@ -389,15 +405,16 @@ export class Collector {
         this.closeRecord(existing, Math.max(0, now - startedAt));
         return;
       }
+      const newId = this.nextId();
       const record: TraceRecord = {
-        id: this.nextId(),
+        id: newId,
         kind: 'assistant',
         turn: this.currentTurn,
         startedAt,
         durationMs: null,
         text: oneLine(textFromContent(message.content)),
-        fullText: truncateField(textFromContent(message.content)) as string,
-        thinking: truncateField(thinkingFromContent(message.content)) as string || undefined,
+        fullText: this.truncateAndStore(newId, 'fullText', textFromContent(message.content)),
+        thinking: this.truncateAndStore(newId, 'thinking', thinkingFromContent(message.content)) || undefined,
         toolCalls: toolCallsFromContent(message.content),
         isError: message.stopReason === 'error',
         model: start?.model ?? message.model,
@@ -445,7 +462,7 @@ export class Collector {
   ): void {
     const record = this.openTools.get(toolCallId);
     if (record === undefined) return;
-    record.result = truncateField(textFromContent(content) || stringifyDetails(details));
+    record.result = this.truncateAndStore(record.id, 'result', textFromContent(content) || stringifyDetails(details));
     record.isError = isError;
     const exitCode = (details as { exitCode?: unknown } | null)?.exitCode;
     if (typeof exitCode === 'number') record.exitCode = exitCode;
@@ -456,7 +473,7 @@ export class Collector {
     const record = this.openTools.get(toolCallId);
     if (record === undefined) return;
     this.openTools.delete(toolCallId);
-    if (record.result === undefined) record.result = truncateField(stringifyResult(result));
+    if (record.result === undefined) record.result = this.truncateAndStore(record.id, 'result', stringifyResult(result));
     record.isError = isError;
     this.closeRecord(record, Math.max(0, Date.now() - record.startedAt));
   }
@@ -519,8 +536,9 @@ export class Collector {
     customPrompt?: string;
   }): void {
     const promptBytes = Buffer.byteLength(input.systemPrompt, 'utf8');
+    const sysId = this.nextId();
     const record: TraceRecord = {
-      id: this.nextId(),
+      id: sysId,
       kind: 'system',
       turn: this.currentTurn,
       startedAt: Date.now(),
@@ -529,12 +547,11 @@ export class Collector {
       isError: false,
       model: input.model,
       provider: input.provider,
-      // system prompt 独立字段（8KB 截断），完整内容存 blob 供前端展开。
-      prompt: input.systemPrompt,
+      // system prompt 截断到 8KB，原文存 fullContent 供前端 Show full 展开。
+      prompt: this.truncateAndStore(sysId, 'prompt', input.systemPrompt),
       args: {
         systemPromptBytes: promptBytes,
         systemPromptTruncated: promptBytes > 8192,
-        promptBlob: promptBytes > 8192,
         tools: input.selectedTools ?? input.toolSnippets ?? [],
         toolSnippets: input.toolSnippets ?? [],
         cwd: input.cwd,

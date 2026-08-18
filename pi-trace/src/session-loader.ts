@@ -136,12 +136,14 @@ export function reconstructFromSessionFile(
   let seq = 0;
   let currentTurn = -1;
   let pendingUser: TraceRecord[] = [];
+  let sourceLine = 0;
 
   const push = (record: Omit<TraceRecord, 'id' | 'durationMs'>): TraceRecord => {
     const full: TraceRecord = {
       ...record,
       id: `${sessionId}-r${seq++}`,
       durationMs: null,
+      ...(sourceLine > 0 ? { sourceLine } : {}),
     };
     records.push(full);
     return full;
@@ -149,7 +151,10 @@ export function reconstructFromSessionFile(
 
   // 逐行处理：indexOf('\n') 避免 split 产生大字符串数组，entries 不留存。
   let lineStart = 0;
+  let lineIndex = 0;
   while (lineStart < content.length) {
+    lineIndex++;
+    sourceLine = lineIndex;
     const lineEnd = content.indexOf('\n', lineStart);
     const line = lineEnd === -1 ? content.slice(lineStart) : content.slice(lineStart, lineEnd);
     lineStart = lineEnd === -1 ? content.length : lineEnd + 1;
@@ -392,4 +397,39 @@ function countAssistantMessages(sessionFile: string): number {
  */
 export function reconstructFromPath(path: string): TraceSession | null {
   return reconstructFromSessionFile(resolve(path));
+}
+
+/** 从 JSONL 行提取完整字段内容（历史会话 Show full 用）。 */
+export function extractFullContent(line: string, field: string): string | null {
+  try {
+    const entry = JSON.parse(line) as SessionEntry;
+    if (entry.type !== 'message' || !entry.message) return null;
+    const message = entry.message;
+    if (field === 'fullText') return textOf(message.content);
+    if (field === 'thinking') return thinkingOf(message.content) || null;
+    if (field === 'result' && message.role === 'toolResult') return textOf(message.content);
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/** 读文件的第 N 行（1-based），返回 null 如果行号超出范围。 */
+export function readLineFromFile(filePath: string, lineNumber: number): string | null {
+  try {
+    const content = readFileSync(filePath, 'utf8');
+    let current = 1;
+    let lineStart = 0;
+    while (lineStart < content.length) {
+      const lineEnd = content.indexOf('\n', lineStart);
+      if (current === lineNumber) {
+        return lineEnd === -1 ? content.slice(lineStart) : content.slice(lineStart, lineEnd);
+      }
+      lineStart = lineEnd === -1 ? content.length : lineEnd + 1;
+      current++;
+    }
+    return null;
+  } catch {
+    return null;
+  }
 }
