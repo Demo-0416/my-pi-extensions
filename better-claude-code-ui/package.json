@@ -3,7 +3,6 @@
   "version": "0.1.0",
   "description": "Claude Code visual identity for pi: 6 CC themes, welcome box, status line, CC spinner, turn footer, and CC-style tool rendering",
   "license": "MIT",
-  "private": true,
   "dependencies": {
     "@shikijs/cli": "^4.0.2",
     "diff": "^9.0.0"
@@ -19,5 +18,6 @@
     "themes": [
       "./theme"
     ]
-  }
+  },
+  "type": "module"
 }
