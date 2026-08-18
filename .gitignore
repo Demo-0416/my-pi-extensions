@@ -2,3 +2,7 @@ node_modules/
 **/node_modules/
 **/shots/
 *.log
+
+# 根目录本地开发残留（typescript typecheck），勿提交
+/package.json
+/package-lock.json
