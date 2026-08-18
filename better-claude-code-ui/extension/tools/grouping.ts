@@ -17,6 +17,7 @@ import {
 	collapsedSummary,
 	formatCollapseHint,
 	type CollapseClassification,
+	type CollapseHint,
 } from "./collapse.js";
 import { bold, dim, fg, italic, type ResolvedPalette } from "../palette.js";
 
@@ -585,6 +586,26 @@ function statusDot(status: ToolStatus, theme: Theme): string {
 }
 
 /**
+ * The latest hint to show on the ⎿ line. CC prefers the currently-running
+ * operation's hint (CollapsedReadSearchContent isActiveGroup branch), falling
+ * back to the last hinted call in the group (readPaths.at(-1) / searchArgs.at(-1)).
+ * We mirror that: newest pending member with a hint wins; otherwise the newest
+ * member with any hint. Returns undefined when no member carries a hint (e.g. an
+ * all-ls group), which blanks the line — matching CC's `incomingHint===undefined`.
+ */
+function latestHint(g: GroupInfo): CollapseHint | undefined {
+	for (let i = g.members.length - 1; i >= 0; i--) {
+		const m = g.members[i]!;
+		if (m.status === "pending" && m.classification?.hint) return m.classification.hint;
+	}
+	for (let i = g.members.length - 1; i >= 0; i--) {
+		const m = g.members[i]!;
+		if (m.classification?.hint) return m.classification.hint;
+	}
+	return undefined;
+}
+
+/**
  * The in-flight hint line for a group (CC CollapsedReadSearchContent.tsx:462-476):
  * `  ⎿  ` + the latest operation's path/pattern/command, dim, held ≥700ms per
  * distinct value so fast-finishing calls stay readable. Only shown while active.
@@ -599,8 +620,13 @@ function hintLineFor(
 		g.hintState.displayed = undefined;
 		return "";
 	}
-	const source = g.members.find((m) => m.status === "pending") ?? g.members[g.members.length - 1];
-	const raw = source?.classification?.hint;
+	// AUDIT §5:596 — CC derives the live hint from the LATEST hinted operation
+	// (CollapsedReadSearchContent.tsx:196-201: readPaths.at(-1) / searchArgs.at(-1)),
+	// not the first pending member. Taking the first pending member froze the
+	// hint on the first file of a parallel batch, and blanked the whole line when
+	// the leader was an ls (no hint) even though a later grep/read in the group
+	// had one. Walk members newest-first and take the first that carries a hint.
+	const raw = latestHint(g);
 	const incoming = raw ? formatCollapseHint(raw, displayPath) : undefined;
 	const st = g.hintState;
 	if (incoming === undefined) {
