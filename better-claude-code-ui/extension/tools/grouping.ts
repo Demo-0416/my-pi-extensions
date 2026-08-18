@@ -390,6 +390,10 @@ export function registerGrouping(pi: ExtensionAPI): void {
 
 	pi.on("turn_start", async () => {
 		// New turn: clear per-turn state but keep the tracker alive.
+		// tools is only ever looked up by ids in turnToolOrder (see rebuildGroups),
+		// so dropping it here is safe and prevents every ToolRecord (with full
+		// tool result) from accumulating for the whole session.
+		tools = new Map();
 		turnToolOrder = [];
 		clearAllHintTimers();
 		groups = [];
