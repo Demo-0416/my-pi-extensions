@@ -49,21 +49,36 @@ export function registerStatusLine(pi: ExtensionAPI): void {
 	pi.on("session_start", async (_event, ctx) => {
 		if (ctx.mode !== "tui") return;
 
-		// Session totals: wall-clock from session_start, turns from user
-		// messages. pi's turn_start fires once per LLM call (agent-loop.js:50,
-		// :89-91) — tools, retries and compaction would all inflate it;
+		// Session totals: wall-clock and a user-turn counter. All three fields
+		// (cost / duration / turns) must share one baseline — CC seeds them
+		// together on resume (setCostStateForRestore adjusts startTime =
+		// Date.now() - lastDuration, cost-tracker.ts). Seeding cost from history
+		// but starting duration/turns from the resume moment makes the two halves
+		// of the same line contradict (AUDIT §5 status-line.ts:41). So on resume
+		// we seed turns from the user messages already in the branch and anchor
+		// the clock to the earliest entry's timestamp.
+		//
 		// message_end with role "user" fires exactly once per submitted prompt
-		// (agent-loop.js:51-54/96-103).
-		const sessionStartMs = Date.now();
-		let turns = 0;
-
-		// Accumulate cost from assistant usage (message_end), like CC's getTotalCost.
+		// (agent-loop.js:51-54/96-103) — not per LLM turn, so it isn't inflated
+		// by tools/retries/compaction.
 		let cost = 0;
+		let turns = 0;
+		let earliestMs = Date.now();
 		for (const e of ctx.sessionManager.getBranch()) {
 			if (e.type === "message" && e.message.role === "assistant") {
 				cost += (e.message as unknown as AssistantUsage).usage.cost.total;
 			}
+			if (e.type === "message" && e.message.role === "user") {
+				turns += 1;
+			}
+			// SessionEntryBase.timestamp is an ISO string (session-manager.d.ts:21).
+			if (typeof e.timestamp === "string") {
+				const t = Date.parse(e.timestamp);
+				if (Number.isFinite(t) && t < earliestMs) earliestMs = t;
+			}
 		}
+		const sessionStartMs = earliestMs;
+
 		pi.on("message_end", async (event) => {
 			if (event.message.role === "assistant") {
 				cost += event.message.usage.cost.total;
