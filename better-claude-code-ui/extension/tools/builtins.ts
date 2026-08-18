@@ -31,7 +31,7 @@ import {
 	createReadToolDefinition,
 	createWriteToolDefinition,
 } from "@earendil-works/pi-coding-agent";
-import { Text, type Component } from "@earendil-works/pi-tui";
+import { sliceByColumn, visibleWidth, wrapTextWithAnsi, type Component } from "@earendil-works/pi-tui";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { resolve, relative } from "node:path";
 import {
@@ -253,27 +253,63 @@ function indentResultBody(text: string): string {
 }
 
 // ---------------------------------------------------------------------------
-// Render cache — pi-tui Text caches by (text, width); skipping setText on
-// identical text keeps the wrap cache hot across frames (dsh-tui
-// CachedCardComponent pattern).
+// Render cache — a result body renders as `  ⎿  ` on line 0 and 5-space indent
+// on every explicit continuation line; the content column is 5. pi-tui Text
+// word-wraps a long logical line back to column 0 (AUDIT §5:241), so we wrap
+// here with a fixed 5-column hanging indent: the prefix (⎿ lead or 5 spaces)
+// stays put and each wrap continuation re-indents to column 5, matching CC's
+// MessageResponse where the whole response shares one gutter.
 // ---------------------------------------------------------------------------
+
+/** Visible width of the `⎿  ` lead / continuation indent = the content column. */
+const RESULT_CONTENT_COL = RESULT_INDENT.length; // 5
+
+/**
+ * Wrap `text` (already prefixed: line 0 with the ⎿ lead, later lines with 5
+ * spaces) to `width`, re-indenting word-wrap continuations to column `indent`.
+ * The first `indent` visible columns of each logical line are treated as a
+ * fixed gutter; only the content past them wraps, and continuation rows get a
+ * plain `indent`-space gutter so they align under the content, not at column 0.
+ */
+function wrapResultBody(text: string, width: number, indent: number): string[] {
+	const out: string[] = [];
+	const pad = " ".repeat(indent);
+	const contentWidth = Math.max(1, width - indent);
+	for (const logical of text.split("\n")) {
+		if (visibleWidth(logical) <= width) {
+			out.push(logical);
+			continue;
+		}
+		// Split the fixed gutter from the content (ANSI-aware). The lead and the
+		// 5-space indent both occupy exactly `indent` visible columns.
+		const gutter = sliceByColumn(logical, 0, indent);
+		const content = sliceByColumn(logical, indent, Number.MAX_SAFE_INTEGER);
+		const wrapped = wrapTextWithAnsi(content, contentWidth);
+		out.push(`${gutter}${wrapped[0] ?? ""}`);
+		for (let i = 1; i < wrapped.length; i++) out.push(`${pad}${wrapped[i]}`);
+	}
+	return out;
+}
 
 class CachedTextComponent implements Component {
 	private text = "";
-	private readonly inner: Text;
-	constructor() {
-		this.inner = new Text("", 0, 0);
-	}
+	private cachedWidth = -1;
+	private cachedLines: string[] | undefined;
 	setText(text: string): void {
 		if (this.text === text) return;
 		this.text = text;
-		this.inner.setText(text);
+		this.invalidate();
 	}
 	render(width: number): string[] {
-		return this.inner.render(width);
+		if (this.cachedLines && this.cachedWidth === width) return this.cachedLines;
+		const lines = this.text === "" ? [] : wrapResultBody(this.text, width, RESULT_CONTENT_COL);
+		this.cachedWidth = width;
+		this.cachedLines = lines;
+		return lines;
 	}
 	invalidate(): void {
-		this.inner.invalidate();
+		this.cachedWidth = -1;
+		this.cachedLines = undefined;
 	}
 }
 
