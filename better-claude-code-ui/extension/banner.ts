@@ -372,7 +372,11 @@ export class BannerComponent {
 			MIN_LEFT_WIDTH,
 		);
 		const boxWidth = Math.min(contentWidth + 4, width - 2);
-		const inner = boxWidth - 2;
+		// A content row is `│ <inner> │` = inner + 4 columns; the top/bottom
+		// borders are boxWidth columns. inner must be boxWidth - 4 (2 borders +
+		// 2 padding spaces), not boxWidth - 2, or every content row runs 2 cols
+		// past the frame and the right border steps out (AUDIT §5 banner.ts:375).
+		const inner = boxWidth - 4;
 		const cwd = truncatePath(this.info.cwd, inner);
 
 		const rows: string[] = [];
