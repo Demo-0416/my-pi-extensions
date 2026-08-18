@@ -7,9 +7,10 @@
  *   1. markdown transformer: every non-empty thinking block gets a
  *      `∴ Thinking…` dim italic title line (CC's expanded shape). The body
  *      keeps pi's built-in thinkingText styling.
- *   2. hidden thinking label: `∴ Thinking` while a block is streaming,
- *      `∴ Thought for Xs` after each block completes (CC's spinner-row
- *      "thought for Xs", surfaced through pi's global hidden label).
+ *   2. hidden thinking label: a CONSTANT `∴ Thinking` collapsed line. pi's
+ *      setHiddenThinkingLabel is a GLOBAL label — it rewrites every history
+ *      AssistantMessageComponent in chatContainer + the streaming one
+ *      (interactive-mode.js:1655-1666), so it must NOT carry per-block data.
  *   3. working message: while a thinking block is active the spinner row
  *      shows dim `(thinking)` — CC's SpinnerAnimationRow thinkingText.
  *
@@ -18,23 +19,19 @@
  * animation (frames are static strings). pi also joins consecutive thinking
  * blocks into one markdown section, so a run of N blocks shares a single
  * `∴ Thinking…` title (CC renders one title per block).
+ *
+ * AUDIT §5 thinking.ts:77 (P2 api-contract): the earlier `∴ Thought for Xs`
+ * per-block duration written into the global label relabelled EVERY history
+ * thinking block to the latest block's duration (the `∴ 15s` four-way mismatch
+ * of AUDIT §3-1). The `thought for Xs` spinner-row byline is a separate spinner
+ * concern (AUDIT §6 spinner P2, B6); it does not belong in this global label.
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { dim, italic } from "./palette.js";
-import { formatTurnDuration } from "./turn-footer.js";
 import { currentWorkingVerb } from "./spinner.js";
 
 const THINKING_TITLE = "∴ Thinking…";
 const HIDDEN_LABEL_THINKING = "∴ Thinking";
-
-/** Format like CC's `thought for 4s` / `thought for 4m 36s`. */
-function thoughtFor(ms: number): string {
-	// CC SpinnerAnimationRow.tsx:172 — Math.max(1, Math.round(ms/1000)):
-	// rounded to the nearest second, floored at 1s, never "0s". The minutes
-	// branch reuses the turn-footer formatter (4m 36s shape, per ALIGNMENT §1).
-	if (ms < 60_000) return `${Math.max(1, Math.round(ms / 1000))}s`;
-	return formatTurnDuration(ms);
-}
 
 /** CC effort.ts:188-196 — the spinner row names the active thinking level. */
 function thinkingText(level: string | undefined): string {
@@ -43,11 +40,13 @@ function thinkingText(level: string | undefined): string {
 }
 
 export function registerThinking(pi: ExtensionAPI): void {
-	let blockStartMs = 0;
-	let lastBlockMs = 0;
+	// Whether a thinking block opened without a matching thinking_end, so the
+	// abort path can restore the spinner verb. NOT a duration — the global
+	// hidden label must never carry per-block data (AUDIT §5 thinking.ts:77).
+	let thinkingActive = false;
 
 	// --- 1. Expanded-shape title for every thinking block -----------------
-	pi.registerMarkdownTransformer((markdown, { messageType, isStreaming }) => {
+	pi.registerMarkdownTransformer((markdown, { messageType }) => {
 		if (messageType !== "assistant-thinking") return markdown;
 		const body = markdown.trim();
 		if (!body) return markdown;
@@ -56,7 +55,9 @@ export function registerThinking(pi: ExtensionAPI): void {
 		return `${dim(italic(THINKING_TITLE))}\n\n${body}`;
 	});
 
-	// --- 2 + 3. Duration tracking → hidden label + working message --------
+	// --- 2. Collapsed-line label (constant, GLOBAL) -----------------------
+	// pi resets the label to its default on session invalidate (resetExtensionUI
+	// → interactive-mode.js:1743), so re-assert on every session_start.
 	pi.on("session_start", async (_event, ctx) => {
 		if (!ctx.hasUI) return;
 		try {
@@ -66,14 +67,13 @@ export function registerThinking(pi: ExtensionAPI): void {
 		}
 	});
 
-	// New turn: the previous turn's "Thought for Xs" must not linger — restore
-	// the resting label and drop the stale duration (CC's spinner state is
-	// per-turn; Spinner.tsx:125-126,147).
+	// --- 3. Spinner working message: (thinking) → verb -------------------
 	pi.on("turn_start", async (_event, ctx) => {
-		blockStartMs = 0;
-		lastBlockMs = 0;
+		thinkingActive = false;
 		if (!ctx.hasUI) return;
 		try {
+			// The label is constant, but keep it asserted in case anything else
+			// touched pi's global label mid-request.
 			ctx.ui.setHiddenThinkingLabel?.(HIDDEN_LABEL_THINKING);
 		} catch {
 			/* best-effort */
@@ -83,7 +83,7 @@ export function registerThinking(pi: ExtensionAPI): void {
 	pi.on("message_update", async (event, ctx) => {
 		const kind = event.assistantMessageEvent?.type;
 		if (kind === "thinking_start") {
-			blockStartMs = Date.now();
+			thinkingActive = true;
 			if (ctx.hasUI) {
 				try {
 					ctx.ui.setWorkingMessage(thinkingText(ctx.thinkingLevel));
@@ -92,15 +92,9 @@ export function registerThinking(pi: ExtensionAPI): void {
 				}
 			}
 		} else if (kind === "thinking_end") {
-			if (blockStartMs) {
-				lastBlockMs = Date.now() - blockStartMs;
-				blockStartMs = 0;
-			}
+			thinkingActive = false;
 			if (ctx.hasUI) {
 				try {
-					if (lastBlockMs > 0) {
-						ctx.ui.setHiddenThinkingLabel?.(`∴ ${thoughtFor(lastBlockMs)}`);
-					}
 					// Restore the turn's spinner verb (CC: thinking text gives
 					// way to the verb once the block ends).
 					ctx.ui.setWorkingMessage(`${currentWorkingVerb()}…`);
@@ -113,18 +107,13 @@ export function registerThinking(pi: ExtensionAPI): void {
 
 	pi.on("message_end", async (_event, ctx) => {
 		// Abort path: thinking_end may never fire when the stream dies (pi goes
-		// through message_end with a failure message). Settle the open block
-		// here so its partial duration survives — CC settles on mode-leave,
-		// not on the event (Spinner.tsx:136-153).
-		if (blockStartMs) {
-			lastBlockMs = Date.now() - blockStartMs;
-			blockStartMs = 0;
-		}
+		// through message_end with a failure message), leaving the spinner stuck
+		// on `(thinking)`. Restore the verb when a block was left open — CC
+		// settles thinking on mode-leave, not on the event (Spinner.tsx:136-153).
+		if (!thinkingActive) return;
+		thinkingActive = false;
 		if (!ctx.hasUI) return;
 		try {
-			if (lastBlockMs > 0) {
-				ctx.ui.setHiddenThinkingLabel?.(`∴ ${thoughtFor(lastBlockMs)}`);
-			}
 			ctx.ui.setWorkingMessage(`${currentWorkingVerb()}…`);
 		} catch {
 			/* best-effort */
