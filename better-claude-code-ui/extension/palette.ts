@@ -255,6 +255,13 @@ export function dim(text: string): string {
 	return attribute(DIM, text, "\x1b[22m");
 }
 
+const ITALIC = "\x1b[3m";
+
+/** Italic text, preserving any color the caller applied. */
+export function italic(text: string): string {
+	return attribute(ITALIC, text, "\x1b[23m");
+}
+
 /** Parse a truecolor foreground/background escape back into channels. */
 export function parseAnsiRgb(ansi: string): Rgb | undefined {
 	const match = /\x1b\[[34]8;2;(\d{1,3});(\d{1,3});(\d{1,3})m/u.exec(ansi);

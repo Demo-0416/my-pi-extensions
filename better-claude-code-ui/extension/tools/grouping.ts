@@ -11,14 +11,14 @@
  */
 import type { ExtensionAPI, Theme } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
+import { existsSync, readFileSync } from "node:fs";
 import {
 	classifyToolCall,
 	collapsedSummary,
-	groupThinkingMs,
+	formatCollapseHint,
 	type CollapseClassification,
-	type CollapsedGroup,
 } from "./collapse.js";
-import { dim as dimText, fg, type ResolvedPalette } from "../palette.js";
+import { bold, dim, fg, italic, type ResolvedPalette } from "../palette.js";
 
 export type ToolStatus = "pending" | "success" | "error";
 
@@ -44,10 +44,40 @@ export interface GroupInfo {
 	searchCount: number;
 	readCount: number;
 	listCount: number;
+	bashCount: number;
 	mcpCallCount: number;
 	mcpServers: string[];
+	/** Last time a member started/finished — drives the MAX 5 blink budget. */
+	lastActiveAt: number;
+	/** 700ms min-display state for the in-flight ⎿ hint line. */
+	hintState: HintState;
 	/** The leader's invalidate callback, so the group refreshes on member updates. */
 	invalidator: (() => void) | undefined;
+}
+
+/**
+ * Per-group hint hold state (CC useMinDisplayTime, MIN_HINT_DISPLAY_MS=700):
+ * each distinct hint stays visible for at least 700ms before a newer one
+ * replaces it, so fast-finishing reads/greps stay readable instead of
+ * flickering past in a single frame.
+ */
+export interface HintState {
+	displayed: string | undefined;
+	shownAt: number;
+	pending: string | undefined;
+	timer: ReturnType<typeof setTimeout> | null;
+}
+
+function createHintState(): HintState {
+	return { displayed: undefined, shownAt: 0, pending: undefined, timer: null };
+}
+
+function clearHintTimer(st: HintState): void {
+	if (st.timer) {
+		clearTimeout(st.timer);
+		st.timer = null;
+	}
+	st.pending = undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -63,14 +93,48 @@ let thinkingOpenSince: number | undefined;
 let blinkTimer: ReturnType<typeof setInterval> | null = null;
 let blinkPhase = true;
 let activeSession = false;
+// Non-grouped tools' running dots: armBlink registers their invalidate so the
+// same tick drives their blink (CC useBlink: every pending dot blinks, not
+// just group leaders). Keyed by toolCallId; dropped on tool_execution_end.
+const standaloneBlinkers = new Map<string, () => void>();
+
+// Blink watchdog (ported from pi-claude-code-ui extensions/index.ts:2656-2783):
+// one global timer blinks all active groups; four safeguards keep it honest.
+const MAX_BLINKING_GROUPS = 5;
+// CC useBlink.ts:3 — one fixed 600ms rhythm for every pending dot.
+const BLINK_INTERVAL_MS = 600;
+// CC CollapsedReadSearchContent.tsx: MIN_HINT_DISPLAY_MS — each distinct ⎿ hint
+// stays visible at least this long before a newer one replaces it.
+const HINT_MIN_DISPLAY_MS = 700;
+// Safety net ONLY for leaked entries after the agent run stopped. Quiet
+// long-running tools (sleep, sparse builds) legitimately emit no updates for
+// minutes — the agent heartbeat below keeps those blinking; this reclaims
+// rows whose run died without firing agent_end.
+const BLINK_STALE_TIMEOUT_MS = 15_000;
+let lastBlinkActivity = 0;
+// Depth of live agent runs (agent_start/agent_end pair per loop run, including
+// retries and nested subagent loops). While > 0, the tick is a heartbeat:
+// quiet tools keep blinking because the run is still alive.
+let agentDepth = 0;
+
+function markBlinkActivity(): void {
+	lastBlinkActivity = Date.now();
+}
 
 function reset(): void {
 	tools = new Map();
 	turnToolOrder = [];
+	clearAllHintTimers();
 	groups = [];
+	standaloneBlinkers.clear();
 	pendingThinkingMs = 0;
 	thinkingOpenSince = undefined;
+	agentDepth = 0;
 	stopBlink();
+}
+
+function clearAllHintTimers(): void {
+	for (const g of groups) clearHintTimer(g.hintState);
 }
 
 function stopBlink(): void {
@@ -80,22 +144,72 @@ function stopBlink(): void {
 	}
 }
 
-function ensureBlink(): void {
-	if (blinkTimer) return;
-	blinkTimer = setInterval(() => {
-		blinkPhase = !blinkPhase;
-		// Invalidate every active group's leader so the pending dot blinks.
-		for (const g of groups) {
-			if (g.active && g.invalidator) {
-				try {
-					g.invalidator();
-				} catch {
-					/* noop */
-				}
+/**
+ * Settle groups whose members never received tool_execution_end (run died
+ * without agent_end). Display-only reclamation: we don't own the real tool
+ * state, we just stop lying that it is still running.
+ */
+function settleLeakedGroups(): void {
+	let changed = false;
+	for (const g of groups) {
+		for (const m of g.members) {
+			if (m.status === "pending") {
+				m.status = "success";
+				changed = true;
 			}
 		}
-		if (!groups.some((g) => g.active)) stopBlink();
-	}, 500);
+		if (g.active) {
+			g.running = false;
+			g.active = false;
+			changed = true;
+		}
+		clearHintTimer(g.hintState);
+	}
+	standaloneBlinkers.clear();
+	if (changed) invalidateGroups();
+}
+
+function blinkTick(): void {
+	const now = Date.now();
+	if (agentDepth > 0) {
+		// Agent run live: quiet tools are still in flight — heartbeat keeps the
+		// blink alive so sparse/no-output commands never look stale mid-run.
+		lastBlinkActivity = now;
+	} else if (lastBlinkActivity !== 0 && now - lastBlinkActivity > BLINK_STALE_TIMEOUT_MS) {
+		// No run live and no progress for 15s: leftover pending members are
+		// leaks. Reclaim them and stop the re-render storm.
+		settleLeakedGroups();
+		stopBlink();
+		return;
+	}
+	blinkPhase = !blinkPhase;
+	// Invalidate at most MAX_BLINKING_GROUPS leaders per tick, most recent first.
+	const active = groups.filter((g) => g.active).sort((a, b) => b.lastActiveAt - a.lastActiveAt);
+	for (const g of active.slice(0, MAX_BLINKING_GROUPS)) {
+		if (g.invalidator) {
+			try {
+				g.invalidator();
+			} catch {
+				/* noop */
+			}
+		}
+	}
+	// Standalone (non-grouped) running dots — same rhythm, same budget, most
+	// recently armed first.
+	const standalone = [...standaloneBlinkers.values()].slice(-MAX_BLINKING_GROUPS);
+	for (const invalidate of standalone) {
+		try {
+			invalidate();
+		} catch {
+			/* noop */
+		}
+	}
+	if (active.length === 0 && standaloneBlinkers.size === 0) stopBlink();
+}
+
+function ensureBlink(): void {
+	if (blinkTimer) return;
+	blinkTimer = setInterval(blinkTick, BLINK_INTERVAL_MS);
 	blinkTimer.unref?.();
 }
 
@@ -107,15 +221,24 @@ function buildGroup(members: ToolRecord[], id: number): GroupInfo {
 	let searchCount = 0;
 	let readCount = 0;
 	let listCount = 0;
+	let bashCount = 0;
 	let mcpCallCount = 0;
 	const mcpServers: string[] = [];
 	let running = false;
 	let failed = false;
+	let lastActiveAt = 0;
 	const readPaths = new Set<string>();
 	let readNoPath = 0;
 	for (const m of members) {
 		if (m.status === "pending") running = true;
 		if (m.isError) failed = true;
+		if (m.startedAt > lastActiveAt) lastActiveAt = m.startedAt;
+		// CC counts by tool name: bash calls count as bash (not read/search),
+		// matching CollapsedReadSearchContent's disjoint counters.
+		if (m.toolName === "bash") {
+			bashCount += 1;
+			continue;
+		}
 		const c = m.classification;
 		if (!c) continue;
 		switch (c.kind) {
@@ -147,8 +270,11 @@ function buildGroup(members: ToolRecord[], id: number): GroupInfo {
 		searchCount,
 		readCount,
 		listCount,
+		bashCount,
 		mcpCallCount,
 		mcpServers,
+		lastActiveAt,
+		hintState: createHintState(),
 		invalidator: undefined,
 	};
 }
@@ -179,10 +305,14 @@ function rebuildGroups(): void {
 		}
 	}
 	flush();
-	// Preserve invalidators across rebuilds (leaders may already be rendering).
+	// Preserve invalidators and hint hold-state across rebuilds (leaders may
+	// already be rendering).
 	for (const ng of newGroups) {
 		const old = groups.find((g) => g.members[0]?.toolCallId === ng.members[0]?.toolCallId);
-		if (old) ng.invalidator = old.invalidator;
+		if (old) {
+			ng.invalidator = old.invalidator;
+			ng.hintState = old.hintState;
+		}
 	}
 	groups = newGroups;
 }
@@ -191,9 +321,56 @@ function groupOf(toolCallId: string): GroupInfo | undefined {
 	return groups.find((g) => g.members.some((m) => m.toolCallId === toolCallId));
 }
 
+/** Bump a group's recency so the MAX 5 blink budget favors the latest work. */
+function touchGroup(toolCallId: string): void {
+	const g = groupOf(toolCallId);
+	if (g) g.lastActiveAt = Date.now();
+}
+
 function isLeader(toolCallId: string): boolean {
 	const g = groupOf(toolCallId);
 	return !!g && g.members[0]?.toolCallId === toolCallId;
+}
+
+// ---------------------------------------------------------------------------
+// /cc-tools group on|off — persisted in ~/.pi/settings.json under
+// `groupToolCalls` (same key the old extension used; commands.ts writes it).
+// ---------------------------------------------------------------------------
+
+const SETTINGS_CACHE_TTL_MS = 2_000;
+let settingsCache: { value: boolean; timestamp: number } | null = null;
+
+function readGroupToolCalls(): boolean {
+	// Default ON; only an explicit `false` disables grouping.
+	let enabled = true;
+	const home = process.env.HOME ?? "";
+	const paths = [`${process.cwd()}/.pi/settings.json`, `${home}/.pi/settings.json`];
+	for (const path of paths) {
+		try {
+			if (!path || !existsSync(path)) continue;
+			const raw = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
+			if (typeof raw.groupToolCalls === "boolean") enabled = raw.groupToolCalls;
+		} catch {
+			/* keep previous value on parse error */
+		}
+	}
+	return enabled;
+}
+
+/** Whether collapsed tool grouping is enabled (reads settings.json, 2s cache). */
+export function isGroupingEnabled(): boolean {
+	const now = Date.now();
+	if (settingsCache && now - settingsCache.timestamp < SETTINGS_CACHE_TTL_MS) {
+		return settingsCache.value;
+	}
+	const value = readGroupToolCalls();
+	settingsCache = { value, timestamp: now };
+	return value;
+}
+
+/** Drop the settings cache so a /cc-tools group toggle applies immediately. */
+export function bustGroupingSettingsCache(): void {
+	settingsCache = null;
 }
 
 // ---------------------------------------------------------------------------
@@ -214,13 +391,48 @@ export function registerGrouping(pi: ExtensionAPI): void {
 	pi.on("turn_start", async () => {
 		// New turn: clear per-turn state but keep the tracker alive.
 		turnToolOrder = [];
+		clearAllHintTimers();
 		groups = [];
 		pendingThinkingMs = 0;
 		thinkingOpenSince = undefined;
+		markBlinkActivity();
+	});
+
+	// Agent heartbeat (old ext index.ts:4800-4866, 6863-6890): agent_start and
+	// agent_end pair per loop run (retries and nested subagent loops included),
+	// so depth counts them correctly. While depth > 0 the blink tick is a
+	// heartbeat — quiet long-running tools keep blinking.
+	pi.on("before_agent_start", async () => {
+		markBlinkActivity();
+	});
+
+	pi.on("agent_start", async () => {
+		agentDepth += 1;
+		markBlinkActivity();
+	});
+
+	pi.on("agent_end", async () => {
+		agentDepth = Math.max(0, agentDepth - 1);
+		// Defer so a sibling agent_start (retry/continuation) in the same
+		// window re-arms the depth before we decide the run is over.
+		queueMicrotask(() => {
+			if (agentDepth === 0) {
+				// Run finished: settle any leaked pending members (tool_end lost)
+				// and stop blink. Do NOT clear on turn_end — a turn ends when the
+				// assistant message finishes, BEFORE its tools run.
+				settleLeakedGroups();
+				stopBlink();
+			}
+		});
+	});
+
+	pi.on("message_start", async (event) => {
+		if (event.message.role === "user") markBlinkActivity();
 	});
 
 	// Track thinking spans for the collapsed summary's "Thought for Xs".
 	pi.on("message_update", async (event) => {
+		markBlinkActivity();
 		const content = (event as { message?: { content?: unknown } })?.message?.content;
 		if (!Array.isArray(content)) return;
 		let hasThinking = false;
@@ -272,12 +484,22 @@ export function registerGrouping(pi: ExtensionAPI): void {
 			pendingThinkingMs += Date.now() - thinkingOpenSince;
 			thinkingOpenSince = undefined;
 		}
+		markBlinkActivity();
+		touchGroup(event.toolCallId);
 		invalidateGroups();
 		if (record.classification) ensureBlink();
 	});
 
+	// Partial tool output is the main long-running signal (bash streams for
+	// minutes) — keep the blink watchdog's activity clock fresh.
+	pi.on("tool_execution_update", async (event) => {
+		markBlinkActivity();
+		touchGroup(event.toolCallId);
+	});
+
 	pi.on("tool_execution_end", async (event) => {
 		const t = tools.get(event.toolCallId);
+		standaloneBlinkers.delete(event.toolCallId);
 		if (!t) return;
 		t.status = event.isError ? "error" : "success";
 		t.isError = event.isError;
@@ -288,7 +510,9 @@ export function registerGrouping(pi: ExtensionAPI): void {
 			g.running = g.members.some((m) => m.status === "pending");
 			g.failed = g.members.some((m) => m.isError);
 			g.active = g.running || g.thinkingSince !== undefined;
+			g.lastActiveAt = Date.now();
 		}
+		markBlinkActivity();
 		invalidateGroups();
 	});
 }
@@ -317,6 +541,7 @@ export function registerGroupInvalidator(toolCallId: string, invalidate: () => v
 
 /** Whether this tool should render zero lines (a non-leader group member). */
 export function isHiddenGroupMember(toolCallId: string): boolean {
+	if (!isGroupingEnabled()) return false;
 	const g = groupOf(toolCallId);
 	return !!g && !isLeader(toolCallId);
 }
@@ -328,6 +553,7 @@ export interface GroupRenderInfo {
 }
 
 export function getGroupRenderInfo(toolCallId: string, expanded: boolean): GroupRenderInfo | undefined {
+	if (!isGroupingEnabled()) return undefined;
 	const g = groupOf(toolCallId);
 	if (!g || !isLeader(toolCallId)) return undefined;
 	return { group: g, leader: true, phase: expanded ? "preview" : "collapsed" };
@@ -348,6 +574,69 @@ function statusDot(status: ToolStatus, theme: Theme): string {
 	}
 }
 
+/**
+ * The in-flight hint line for a group (CC CollapsedReadSearchContent.tsx:462-476):
+ * `  ⎿  ` + the latest operation's path/pattern/command, dim, held ≥700ms per
+ * distinct value so fast-finishing calls stay readable. Only shown while active.
+ */
+function hintLineFor(
+	g: GroupInfo,
+	theme: Theme,
+	displayPath: (p: string) => string,
+): string {
+	if (!g.active) {
+		clearHintTimer(g.hintState);
+		g.hintState.displayed = undefined;
+		return "";
+	}
+	const source = g.members.find((m) => m.status === "pending") ?? g.members[g.members.length - 1];
+	const raw = source?.classification?.hint;
+	const incoming = raw ? formatCollapseHint(raw, displayPath) : undefined;
+	const st = g.hintState;
+	if (incoming === undefined) {
+		clearHintTimer(st);
+		st.displayed = undefined;
+		return "";
+	}
+	const now = Date.now();
+	if (st.displayed === undefined) {
+		st.displayed = incoming;
+		st.shownAt = now;
+	} else if (incoming !== st.displayed) {
+		const elapsed = now - st.shownAt;
+		if (elapsed >= HINT_MIN_DISPLAY_MS) {
+			clearHintTimer(st);
+			st.displayed = incoming;
+			st.shownAt = now;
+		} else if (st.pending !== incoming) {
+			// Newer hint waits its turn; switch when the current one has aged out.
+			st.pending = incoming;
+			if (st.timer === null) {
+				st.timer = setTimeout(() => {
+					st.timer = null;
+					if (st.pending !== undefined) {
+						st.displayed = st.pending;
+						st.pending = undefined;
+						st.shownAt = Date.now();
+					}
+					if (g.invalidator) {
+						try {
+							g.invalidator();
+						} catch {
+							/* noop */
+						}
+					}
+				}, HINT_MIN_DISPLAY_MS - elapsed);
+				st.timer.unref?.();
+			}
+		}
+	}
+	// CC indents continuation lines to column 5 (2 lead + ⎿ + 2 gap) so a
+	// multi-line command hint reads as one block, not column-0 ragged lines.
+	const body = st.displayed.split("\n").join("\n     ");
+	return st.displayed !== undefined ? `\n  ${theme.fg("dim", `⎿  ${body}`)}` : "";
+}
+
 /** The collapsed summary row (dsh-tui CollapsedGroupComponent). */
 export function renderCollapsedSummary(
 	info: GroupRenderInfo,
@@ -357,25 +646,23 @@ export function renderCollapsedSummary(
 ): string {
 	const g = info.group;
 	const now = Date.now();
-	const summary = collapsedSummary(g, now);
-	// CC CollapsedReadSearchContent: active = ToolUseLoader (⏺, default, blink);
-// done = empty 2-wide gutter (no dot); error = ⏺ red. Text dim when done, default when active.
-const bullet = g.failed
-		? theme.fg("error", BLACK_CIRCLE)
-		: g.active
-			? (ensureBlink(), blinkPhase ? BLACK_CIRCLE : " ")
-			: " ";
+	// CC wraps every count in <Bold>; bold's 22m closes only the intensity
+	// attribute, so it survives the settled line's dim foreground (38;2).
+	const summary = collapsedSummary(g, now, (count) => bold(String(count)));
+	// CC CollapsedReadSearchContent.tsx:450 — settled groups render <Box minWidth={2}/>
+	// (2 spaces, NO glyph, even when a member errored); active groups render
+	// ToolUseLoader, whose isError dot is red but dimColor (dim + error, static —
+	// a resolved error shows its state, not the pending blink).
+	const gutter = !g.active
+		? "  "
+		: g.failed
+			? `${dim(fg(palette.cc.error, BLACK_CIRCLE))} `
+			: (ensureBlink(), blinkPhase ? `${theme.fg("dim", BLACK_CIRCLE)} ` : "  ");
 	const text = g.active ? summary : theme.fg("dim", summary);
-	const hint = theme.fg("dim", "(ctrl+o to expand)");
-	// In-flight hint: the latest operation's path/pattern/command.
-	const inFlight = g.members.find((m) => m.status === "pending") ?? g.members[g.members.length - 1];
-	let hintLine = "";
-	if (inFlight?.classification?.hint && g.active) {
-		const h = inFlight.classification.hint;
-		const value = h.kind === "path" ? displayPath(h.value) : h.kind === "pattern" ? `"${h.value}"` : h.kind === "command" ? `$ ${h.value}` : h.value;
-		hintLine = `\n  ${theme.fg("dim", "⎿ " + value)}`;
-	}
-	return ` ${bullet} ${text} ${hint}${hintLine}`;
+	// CC CtrlOToExpand.tsx:39 — dim "(ctrl+o to expand)", always rendered.
+	const hint = italic(theme.fg("dim", "(ctrl+o to expand)"));
+	const hintLine = hintLineFor(g, theme, displayPath);
+	return `${gutter}${text} ${hint}${hintLine}`;
 }
 
 /** Branch prefix for a member's glance line (bare ├/└, no horizontal arm). */
@@ -477,9 +764,13 @@ export function currentBlinkPhase(): boolean {
 	return blinkPhase;
 }
 
-/** Ensure the blink timer runs while a pending tool is visible. */
-export function armBlink(): void {
-	if (activeSession) ensureBlink();
+/** Ensure the blink timer runs while a pending tool is visible, and register
+ *  the tool's own invalidate so its dot actually toggles (group leaders are
+ *  invalidated via g.invalidator; standalone tools need their own entry). */
+export function armBlink(toolCallId: string, invalidate: () => void): void {
+	if (!activeSession) return;
+	standaloneBlinkers.set(toolCallId, invalidate);
+	ensureBlink();
 }
 
 export function makeText(last: unknown, text: string): Text {

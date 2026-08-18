@@ -7,10 +7,11 @@
  * (palette.ts) instead of fixed BRAND_COLORS, so the diff follows the active
  * theme (dark/light/daltonized/ansi).
  */
-import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
-import { diffWords, structuredPatch } from "diff";
+import { truncateToWidth, visibleWidth, type Component } from "@earendil-works/pi-tui";
+import { diffWordsWithSpace, structuredPatch } from "diff";
 import {
 	bgAnsi,
+	bold,
 	fgAnsi,
 	rgbToHex,
 	resolvePalette,
@@ -28,7 +29,12 @@ export const MAX_PREVIEW_LINES = 60;
 export const MAX_RENDER_LINES = 150;
 const MAX_HL_CHARS = 32_000;
 const CACHE_LIMIT = 48;
-const WORD_DIFF_MIN_SIM = 0.15;
+/**
+ * CC StructuredDiff/Fallback.tsx:80 — word-level highlighting only when the
+ * changed fraction of the paired lines is at most 0.4; otherwise the whole
+ * line keeps the plain add/remove background.
+ */
+const CHANGE_RATIO_THRESHOLD = 0.4;
 const MAX_WRAP_ROWS_WIDE = 3;
 const MAX_WRAP_ROWS_MED = 2;
 const MAX_WRAP_ROWS_NARROW = 1;
@@ -140,20 +146,36 @@ function ansiState(text: string): string {
 	const matches = text.match(/\x1b\[[0-9;]*m/gu) ?? [];
 	let foreground = "";
 	let background = "";
+	let bold = false;
+	let italic = false;
 	for (const sequence of matches) {
 		const params = sequence.slice(2, -1);
 		if (params === "0") {
 			foreground = "";
 			background = "";
+			bold = false;
+			italic = false;
 		} else if (params === "39") {
 			foreground = "";
+		} else if (params === "49") {
+			background = "";
+		} else if (params === "1") {
+			bold = true;
+		} else if (params === "22") {
+			bold = false;
+		} else if (params === "3") {
+			italic = true;
+		} else if (params === "23") {
+			italic = false;
 		} else if (params.startsWith("38;")) {
 			foreground = sequence;
 		} else if (params.startsWith("48;")) {
 			background = sequence;
 		}
 	}
-	return background + foreground;
+	// Replay bold/italic too — shiki emits them (code-to-ansi:52-55) and wrapped
+	// continuation rows would otherwise lose the style past the first line.
+	return background + foreground + (bold ? "\x1b[1m" : "") + (italic ? "\x1b[3m" : "");
 }
 
 function normalizeShikiContrast(s: DiffSgr, ansi: string): string {
@@ -243,8 +265,14 @@ function stripes(s: DiffSgr, width: number): string {
 	return `${s.BG_BASE}${s.FG_STRIPE}${"╱".repeat(width)}${D_RST}`;
 }
 
-function diffRule(s: DiffSgr, width: number): string {
-	return `${s.BG_BASE}${s.FG_RULE}${"─".repeat(width)}${D_RST}`;
+/**
+ * CC FileEditToolDiff.tsx:98 — the diff card frame is a dashed top/bottom
+ * border only (borderLeft/borderRight=false), drawn in the subtle/dim color.
+ * Terminal ink has no dashed border style, so a light double-dash glyph (╌)
+ * in the dim color stands in for it.
+ */
+function diffDashedRule(s: DiffSgr, width: number): string {
+	return `${s.BG_BASE}${s.FG_DIM}${"╌".repeat(Math.max(0, width))}${D_RST}`;
 }
 
 function maxLineNumber(lines: readonly DiffLine[]): number {
@@ -294,6 +322,21 @@ export function diffSummaryWithMeta(
 	if (hunks > 0) extras.push(`${s.FG_DIM}${hunks} hunk${hunks === 1 ? "" : "s"}${D_RST}`);
 	if (mode !== "") extras.push(`${s.FG_DIM}${mode}${D_RST}`);
 	return extras.length > 0 ? `${base} ${s.FG_DIM}•${D_RST} ${extras.join(` ${s.FG_DIM}•${D_RST} `)}` : base;
+}
+
+/**
+ * CC FileEditToolUpdatedMessage.tsx:32-110 — the edit/write stat line:
+ * `Added N lines, Removed M lines`, numbers bold, default color, singular when
+ * the count is 1. When only one side changed, the other fragment is omitted
+ * (and "Removed" keeps its capital R as the first fragment).
+ */
+export function renderDiffStatLine(added: number, removed: number): string {
+	const parts: string[] = [];
+	if (added > 0) parts.push(`Added ${bold(String(added))} ${added === 1 ? "line" : "lines"}`);
+	if (removed > 0) {
+		parts.push(`${added > 0 ? ", " : ""}${added === 0 ? "R" : "r"}emoved ${bold(String(removed))} ${removed === 1 ? "line" : "lines"}`);
+	}
+	return parts.join("");
 }
 
 export function collapsedDiffHint(
@@ -352,7 +395,17 @@ export function diffLanguage(path: string): string | undefined {
 	return EXTENSION_LANGUAGES[extension];
 }
 
+/**
+ * @deprecated Default kept for signature compatibility; new code should derive
+ * the theme from the active palette with {@link shikiThemeForPalette} so the
+ * highlight follows the dark/light scheme instead of being pinned to dark.
+ */
 export const DEFAULT_SHIKI_THEME = "github-dark";
+
+/** CC shiki themes track the palette scheme (github-light on light palettes). */
+export function shikiThemeForPalette(p: ResolvedPalette): string {
+	return p.scheme === "light" ? "github-light" : "github-dark";
+}
 
 const highlightCache = new Map<string, readonly string[]>();
 
@@ -378,7 +431,7 @@ export function clearHighlightCache(): void {
 export async function warmHighlightCache(
 	code: string,
 	language: string | undefined,
-	theme = DEFAULT_SHIKI_THEME,
+	theme: string = shikiThemeForPalette(activeSgrPalette),
 ): Promise<readonly string[]> {
 	if (code === "") return [""];
 	if (language === undefined || code.length > MAX_HL_CHARS) return code.split("\n");
@@ -404,13 +457,29 @@ export async function warmHighlightCache(
 // sets the active palette on session/theme changes.
 let activeSgrPalette: ResolvedPalette = resolvePalette("claude-code-dark", () => undefined);
 export function setDiffPalette(p: ResolvedPalette): void {
+	if (p === activeSgrPalette) return;
 	activeSgrPalette = p;
+	// Theme switch: re-warm every cached (language, code) pair under the new
+	// shiki theme, so the next render highlights instead of falling back to
+	// plain text (CC HighlightedCode re-highlights on theme change).
+	const theme = shikiThemeForPalette(p);
+	for (const key of highlightCache.keys()) {
+		const sep1 = key.indexOf("\u0000");
+		const sep2 = key.indexOf("\u0000", sep1 + 1);
+		if (sep1 < 0 || sep2 < 0) continue;
+		const language = key.slice(sep1 + 1, sep2);
+		const code = key.slice(sep2 + 1);
+		void warmHighlightCache(code, language === "" ? undefined : language, theme).catch(() => {
+			/* best-effort re-warm */
+		});
+	}
 }
 
-export function shikiHighlighter(theme = DEFAULT_SHIKI_THEME): DiffHighlighter {
+export function shikiHighlighter(theme?: string): DiffHighlighter {
+	const resolved = theme ?? shikiThemeForPalette(activeSgrPalette);
 	return (code, language) => {
 		if (language === undefined) return undefined;
-		return highlightCache.get(highlightKey(theme, language, code));
+		return highlightCache.get(highlightKey(resolved, language, code));
 	};
 }
 
@@ -473,22 +542,28 @@ function fromPatch(
 export function wordDiffAnalysis(
 	oldText: string,
 	newText: string,
-): { similarity: number; oldRanges: Array<[number, number]>; newRanges: Array<[number, number]> } {
-	if (oldText === "" && newText === "") return { similarity: 1, oldRanges: [], newRanges: [] };
-	const parts = diffWords(oldText, newText);
+): { similarity: number; changeRatio: number; oldRanges: Array<[number, number]>; newRanges: Array<[number, number]> } {
+	if (oldText === "" && newText === "") return { similarity: 1, changeRatio: 0, oldRanges: [], newRanges: [] };
+	// CC Fallback.tsx:228-233 — diffWordsWithSpace preserves spaces between
+	// tokens (e.g. `>` and `{`); diffWords would count pure-whitespace edits
+	// as changed and inflate changeRatio.
+	const parts = diffWordsWithSpace(oldText, newText);
 	const oldRanges: Array<[number, number]> = [];
 	const newRanges: Array<[number, number]> = [];
 	let oldPos = 0;
 	let newPos = 0;
 	let same = 0;
+	let changed = 0;
 	for (const part of parts) {
 		const length = part.value.length;
 		if (part.removed === true) {
 			oldRanges.push([oldPos, oldPos + length]);
 			oldPos += length;
+			changed += length;
 		} else if (part.added === true) {
 			newRanges.push([newPos, newPos + length]);
 			newPos += length;
+			changed += length;
 		} else {
 			same += length;
 			oldPos += length;
@@ -496,7 +571,14 @@ export function wordDiffAnalysis(
 		}
 	}
 	const maxLength = Math.max(oldText.length, newText.length);
-	return { similarity: maxLength > 0 ? same / maxLength : 1, oldRanges, newRanges };
+	// CC Fallback.tsx:253-255: changeRatio = changedLength / (oldLen + newLen).
+	const totalLength = oldText.length + newText.length;
+	return {
+		similarity: maxLength > 0 ? same / maxLength : 1,
+		changeRatio: totalLength > 0 ? changed / totalLength : 0,
+		oldRanges,
+		newRanges,
+	};
 }
 
 function injectBg(
@@ -541,7 +623,7 @@ function injectBg(
 }
 
 function plainWordDiff(s: DiffSgr, oldText: string, newText: string): { old: string; new: string } {
-	const parts = diffWords(oldText, newText);
+	const parts = diffWordsWithSpace(oldText, newText);
 	let oldOut = "";
 	let newOut = "";
 	for (const part of parts) {
@@ -570,7 +652,9 @@ export function renderUnified(p: ResolvedPalette, diff: ParsedDiff, width: numbe
 	const max = options.maxLines ?? MAX_RENDER_LINES;
 	const visible = diff.lines.slice(0, max);
 	const numberWidth = Math.max(2, String(maxLineNumber(visible)).length);
-	const codeWidth = Math.max(20, width - (numberWidth + 5));
+	// CC Fallback.tsx:351 — content width only floors at 1; a 20-col floor
+	// would overflow the card on narrow terminals (gutter 7 + code 20 > w=20).
+	const codeWidth = Math.max(1, width - (numberWidth + 5));
 	const wrapRows = adaptiveWrapRows(width);
 	const canHighlight = diff.chars <= MAX_HL_CHARS && visible.length <= MAX_RENDER_LINES;
 
@@ -586,7 +670,7 @@ export function renderUnified(p: ResolvedPalette, diff: ParsedDiff, width: numbe
 	let oldIndex = 0;
 	let newIndex = 0;
 	let index = 0;
-	const out: string[] = [diffRule(s, width)];
+	const out: string[] = [diffDashedRule(s, width)];
 
 	const emitRow = (
 		num: number | null,
@@ -610,12 +694,8 @@ export function renderUnified(p: ResolvedPalette, diff: ParsedDiff, width: numbe
 		const line = visible[index];
 		if (line === undefined) break;
 		if (line.type === "sep") {
-			const gap = line.newNum;
-			const label = gap !== null && gap > 0 ? ` ${gap} unmodified lines ` : "···";
-			const totalWidth = Math.min(width, 72);
-			const pad = Math.max(0, totalWidth - label.length - 2);
-			const half = Math.floor(pad / 2);
-			out.push(`${s.BG_BASE}${s.FG_DIM}${"─".repeat(half)}${label}${"─".repeat(pad - half)}${D_RST}`);
+			// CC StructuredDiffList.tsx:27 — hunks are separated by a dim "..." row.
+			out.push(`${s.BG_BASE}${s.FG_DIM}...${D_RST}`);
 			index += 1;
 			continue;
 		}
@@ -645,35 +725,43 @@ export function renderUnified(p: ResolvedPalette, diff: ParsedDiff, width: numbe
 			index += 1;
 		}
 
-		const removal = removals.length === 1 ? removals[0] : undefined;
-		const addition = additions.length === 1 ? additions[0] : undefined;
-		const paired = removal !== undefined && addition !== undefined
-			? wordDiffAnalysis(removal.line.content, addition.line.content)
-			: undefined;
-		if (removal !== undefined && addition !== undefined && paired !== undefined && paired.similarity >= WORD_DIFF_MIN_SIM) {
-			if (canHighlight) {
-				emitRow(removal.line.oldNum, "-", s.BG_DEL, `${s.FG_DEL}${D_BOLD}`, injectBg(s, removal.highlighted, paired.oldRanges, s.BG_DEL, s.BG_DEL_W), s.BG_DEL);
-				emitRow(addition.line.newNum, "+", s.BG_ADD, `${s.FG_ADD}${D_BOLD}`, injectBg(s, addition.highlighted, paired.newRanges, s.BG_ADD, s.BG_ADD_W), s.BG_ADD);
+		// CC Fallback.tsx:190-204 — pair the k-th removal with the k-th
+		// addition and word-diff each pair (pairCount = min(len)); a pair
+		// whose changeRatio exceeds the threshold falls back to whole-line.
+		// Unpaired tail lines (the longer side's remainder) render whole-line.
+		const pairCount = Math.min(removals.length, additions.length);
+		for (let k = 0; k < pairCount; k += 1) {
+			const removal = removals[k]!;
+			const addition = additions[k]!;
+			const analysis = wordDiffAnalysis(removal.line.content, addition.line.content);
+			if (analysis.changeRatio <= CHANGE_RATIO_THRESHOLD) {
+				if (canHighlight) {
+					emitRow(removal.line.oldNum, "-", s.BG_DEL, `${s.FG_DEL}${D_BOLD}`, injectBg(s, removal.highlighted, analysis.oldRanges, s.BG_DEL, s.BG_DEL_W), s.BG_DEL);
+					emitRow(addition.line.newNum, "+", s.BG_ADD, `${s.FG_ADD}${D_BOLD}`, injectBg(s, addition.highlighted, analysis.newRanges, s.BG_ADD, s.BG_ADD_W), s.BG_ADD);
+				} else {
+					const words = plainWordDiff(s, removal.line.content, addition.line.content);
+					emitRow(removal.line.oldNum, "-", s.BG_DEL, `${s.FG_DEL}${D_BOLD}`, `${s.BG_DEL}${words.old}`, s.BG_DEL);
+					emitRow(addition.line.newNum, "+", s.BG_ADD, `${s.FG_ADD}${D_BOLD}`, `${s.BG_ADD}${words.new}`, s.BG_ADD);
+				}
 			} else {
-				const words = plainWordDiff(s, removal.line.content, addition.line.content);
-				emitRow(removal.line.oldNum, "-", s.BG_DEL, `${s.FG_DEL}${D_BOLD}`, `${s.BG_DEL}${words.old}`, s.BG_DEL);
-				emitRow(addition.line.newNum, "+", s.BG_ADD, `${s.FG_ADD}${D_BOLD}`, `${s.BG_ADD}${words.new}`, s.BG_ADD);
+				emitRow(removal.line.oldNum, "-", s.BG_DEL, `${s.FG_DEL}${D_BOLD}`, `${s.BG_DEL}${canHighlight ? removal.highlighted : removal.line.content}`, s.BG_DEL);
+				emitRow(addition.line.newNum, "+", s.BG_ADD, `${s.FG_ADD}${D_BOLD}`, `${s.BG_ADD}${canHighlight ? addition.highlighted : addition.line.content}`, s.BG_ADD);
 			}
-			continue;
 		}
-		for (const entry of removals) {
-			const body = canHighlight ? entry.highlighted : entry.line.content;
-			emitRow(entry.line.oldNum, "-", s.BG_DEL, `${s.FG_DEL}${D_BOLD}`, `${s.BG_DEL}${body}`, s.BG_DEL);
+		for (let k = pairCount; k < removals.length; k += 1) {
+			const entry = removals[k]!;
+			emitRow(entry.line.oldNum, "-", s.BG_DEL, `${s.FG_DEL}${D_BOLD}`, `${s.BG_DEL}${canHighlight ? entry.highlighted : entry.line.content}`, s.BG_DEL);
 		}
-		for (const entry of additions) {
-			const body = canHighlight ? entry.highlighted : entry.line.content;
-			emitRow(entry.line.newNum, "+", s.BG_ADD, `${s.FG_ADD}${D_BOLD}`, `${s.BG_ADD}${body}`, s.BG_ADD);
+		for (let k = pairCount; k < additions.length; k += 1) {
+			const entry = additions[k]!;
+			emitRow(entry.line.newNum, "+", s.BG_ADD, `${s.FG_ADD}${D_BOLD}`, `${s.BG_ADD}${canHighlight ? entry.highlighted : entry.line.content}`, s.BG_ADD);
 		}
 	}
 
-	out.push(diffRule(s, width));
+	out.push(diffDashedRule(s, width));
 	if (diff.lines.length > visible.length) {
-		const hint = collapsedDiffHint(diff.lines.length - visible.length, 0, width, options.toggleHint);
+		// The 2-space indent is part of the width budget (callers prefix it).
+		const hint = collapsedDiffHint(diff.lines.length - visible.length, 0, width - 2, options.toggleHint);
 		out.push(`${s.BG_BASE}${s.FG_DIM}  ${hint}${D_RST}`);
 	}
 	return out;
@@ -753,10 +841,8 @@ export function renderSplit(p: ResolvedPalette, diff: ParsedDiff, width: number,
 			return { gutter, contGutter: gutter, bodyRows: [stripes(s, codeWidth)] };
 		}
 		if (line.type === "sep") {
-			const gap = line.newNum;
-			const label = gap !== null && gap > 0 ? `··· ${gap} lines ···` : "···";
 			const gutter = `${s.BG_BASE} ${s.FG_DIM}${fit(s, "", numberWidth + 2)}${D_RST}${s.FG_RULE}│${D_RST} `;
-			return { gutter, contGutter: gutter, bodyRows: [`${s.BG_BASE}${s.FG_DIM}${fit(s, label, codeWidth)}${D_RST}`] };
+			return { gutter, contGutter: gutter, bodyRows: [`${s.BG_BASE}${s.FG_DIM}...${D_RST}`] };
 		}
 		const isDel = line.type === "del";
 		const isAdd = line.type === "add";
@@ -780,16 +866,21 @@ export function renderSplit(p: ResolvedPalette, diff: ParsedDiff, width: number,
 	const headerOld = `${s.BG_BASE}${" ".repeat(Math.max(0, numberWidth - 2))}${s.FG_DEL}${D_DIM}old${D_RST}`;
 	const headerNew = `${s.BG_BASE}${" ".repeat(Math.max(0, numberWidth - 2))}${s.FG_ADD}${D_DIM}new${D_RST}`;
 	out.push(`${s.BG_BASE}${headerOld}${" ".repeat(Math.max(0, half - numberWidth - 1))}${s.FG_RULE}┊${D_RST}${headerNew}`);
-	out.push(`${diffRule(s, half)}${s.FG_RULE}┊${D_RST}${diffRule(s, half)}`);
+	out.push(`${diffDashedRule(s, half)}${s.FG_RULE}┊${D_RST}${diffDashedRule(s, half)}`);
 
 	for (const row of visible) {
 		const { left, right } = row;
+		if (left !== null && right !== null && left.type === "sep" && right.type === "sep") {
+			// CC StructuredDiffList.tsx:27 — one dim "..." row between hunks.
+			out.push(`${s.BG_BASE}${s.FG_DIM}...${D_RST}`);
+			continue;
+		}
 		const paired = left !== null && right !== null && left.type === "del" && right.type === "add"
 			? wordDiffAnalysis(left.content, right.content)
 			: undefined;
 		let leftResult: HalfResult;
 		let rightResult: HalfResult;
-		if (left !== null && right !== null && paired !== undefined && paired.similarity >= WORD_DIFF_MIN_SIM) {
+		if (left !== null && right !== null && paired !== undefined && paired.changeRatio <= CHANGE_RATIO_THRESHOLD) {
 			if (canHighlight) {
 				leftResult = halfBuild(left, leftHighlighted[leftIndex] ?? left.content, paired.oldRanges, "left");
 				rightResult = halfBuild(right, rightHighlighted[rightIndex] ?? right.content, paired.newRanges, "right");
@@ -816,9 +907,10 @@ export function renderSplit(p: ResolvedPalette, diff: ParsedDiff, width: number,
 		}
 	}
 
-	out.push(`${diffRule(s, half)}${s.FG_RULE}┊${D_RST}${diffRule(s, half)}`);
+	out.push(`${diffDashedRule(s, half)}${s.FG_RULE}┊${D_RST}${diffDashedRule(s, half)}`);
 	if (rows.length > visible.length) {
-		const hint = collapsedDiffHint(rows.length - visible.length, 0, width, options.toggleHint);
+		// The 2-space indent is part of the width budget (callers prefix it).
+		const hint = collapsedDiffHint(rows.length - visible.length, 0, width - 2, options.toggleHint);
 		out.push(`${s.BG_BASE}${s.FG_DIM}  ${hint}${D_RST}`);
 	}
 	return out;
@@ -826,6 +918,40 @@ export function renderSplit(p: ResolvedPalette, diff: ParsedDiff, width: number,
 
 export function renderDiff(p: ResolvedPalette, diff: ParsedDiff, width: number, options: DiffRenderOptions = {}): string[] {
 	return width >= SPLIT_MIN_WIDTH ? renderSplit(p, diff, width, options) : renderUnified(p, diff, width, options);
+}
+
+/**
+ * A pi-tui Component that renders a diff card at the viewport width pi passes
+ * to Component.render() — the width the renderCall/renderResult context does
+ * not carry. The build closure runs once per distinct width and the result is
+ * cached, so terminal resize re-renders the card at the new width for free;
+ * invalidate() (called by pi on theme change, or by the caller after shiki
+ * warmup / args change) drops the cache.
+ */
+export class DiffCardComponent implements Component {
+	/** Stable key the caller uses to decide whether to reuse the card. */
+	diffKey: string | undefined;
+	private readonly cache = new Map<number, string[]>();
+	constructor(private buildFn: (width: number) => string[]) {}
+	/** Replace the render closure (args/header changed) and drop cached lines. */
+	setBuild(build: (width: number) => string[]): void {
+		this.buildFn = build;
+		this.cache.clear();
+	}
+	render(width: number): string[] {
+		const w = Math.max(20, Math.floor(width));
+		const hit = this.cache.get(w);
+		if (hit !== undefined) return hit;
+		const lines = this.buildFn(w);
+		this.cache.set(w, lines);
+		// Width is part of the key, so a resize while the card is visible
+		// accumulates one render copy per distinct width; cap the variants.
+		if (this.cache.size > 6) this.cache.clear();
+		return lines;
+	}
+	invalidate(): void {
+		this.cache.clear();
+	}
 }
 
 export type { ColorValue };

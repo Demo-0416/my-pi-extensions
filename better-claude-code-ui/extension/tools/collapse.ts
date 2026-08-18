@@ -47,7 +47,9 @@ export interface CollapseClassification {
 }
 
 export interface CollapseHint {
-	kind: "path" | "pattern" | "command" | "thinking";
+	// "comment" = a bash call's leading `# comment` label (CC BashTool shows the
+	// human label, not the raw command); rendered without the `$ ` prefix.
+	kind: "path" | "pattern" | "command" | "comment" | "thinking";
 	value: string;
 }
 
@@ -216,6 +218,37 @@ function compactCommand(command: string): string {
 }
 
 /**
+ * CC BashTool label: the first leading `# comment` line (hash stripped) is the
+ * human label for the call — the collapsed hint shows it instead of the raw
+ * command. Blank lines are skipped; the first non-blank line decides.
+ */
+function leadingComment(command: string): string | undefined {
+	for (const line of command.split("\n")) {
+		const trimmed = line.trim();
+		if (trimmed === "") continue;
+		if (!trimmed.startsWith("#")) return undefined;
+		const text = trimmed.slice(1).trim();
+		return text !== "" ? text : undefined;
+	}
+	return undefined;
+}
+
+/**
+ * Drop leading blank + `# comment` lines so the shell classifier sees the real
+ * command — a `#` first word makes classifyShellCommand bail (not a known verb).
+ */
+function stripLeadingComments(command: string): string {
+	const lines = command.split("\n");
+	let i = 0;
+	for (; i < lines.length; i++) {
+		const trimmed = (lines[i] ?? "").trim();
+		if (trimmed === "" || trimmed.startsWith("#")) continue;
+		break;
+	}
+	return lines.slice(i).join("\n");
+}
+
+/**
  * Classify one tool call as a read-only operation. Adapted from dsh-tui
  * collapse.ts:classifyToolCall for pi's builtin tool set (read/bash/grep/find/ls
  * + mcp__*).
@@ -253,10 +286,20 @@ export function classifyToolCall(name: string, args: unknown): CollapseClassific
 		case "bash": {
 			const command = argString(args, "command");
 			if (command === undefined) return undefined;
-			const { isSearch, isRead, isList } = classifyShellCommand(command);
+			const comment = leadingComment(command);
+			// Classify the command without its leading comment lines — a `#` first
+			// word makes classifyShellCommand bail (not a known verb).
+			const stripped = stripLeadingComments(command);
+			const { isSearch, isRead, isList } = classifyShellCommand(stripped);
 			if (!isSearch && !isRead && !isList) return undefined;
 			const kind: CollapseKind = isSearch ? "search" : isList && !isRead ? "list" : "read";
-			return { kind, hint: { kind: "command", value: compactCommand(command) } };
+			return {
+				kind,
+				hint:
+					comment !== undefined
+						? { kind: "comment", value: comment }
+						: { kind: "command", value: compactCommand(stripped) },
+			};
 		}
 		default:
 			return undefined;
@@ -268,6 +311,7 @@ export interface CollapsedGroup {
 	searchCount: number;
 	readCount: number;
 	listCount: number;
+	bashCount: number;
 	mcpCallCount: number;
 	mcpServers: readonly string[];
 	thinkingMs: number;
@@ -311,23 +355,31 @@ function formatDuration(ms: number): string {
 /**
  * dsh-tui transcript.ts: collapsedSummary — present tense while the group runs,
  * past tense once it settles; each fragment agrees with its own count and clock.
+ * `styleCount` styles the count numbers (CC CollapsedReadSearchContent wraps
+ * every count in <Bold>); defaults to plain. The thinking duration is a clock,
+ * not a count, so it is never styled.
  */
-export function collapsedSummary(group: CollapsedGroup, now?: number): string {
+export function collapsedSummary(
+	group: CollapsedGroup,
+	now?: number,
+	styleCount?: (count: number) => string,
+): string {
+	const n = (count: number): string => (styleCount ? styleCount(count) : String(count));
 	const parts: string[] = [];
 	const phase = group.running ? "active" : "settled";
 	const fragment = (kind: "search" | "read" | "list", count: number): void => {
 		const text =
 			kind === "search"
-				? plural(count, `searching for ${count} pattern`, `searching for ${count} patterns`)
+				? plural(count, `searching for ${n(count)} pattern`, `searching for ${n(count)} patterns`)
 				: kind === "read"
-					? plural(count, `reading ${count} file`, `reading ${count} files`)
-					: plural(count, `listing ${count} directory`, `listing ${count} directories`);
+					? plural(count, `reading ${n(count)} file`, `reading ${n(count)} files`)
+					: plural(count, `listing ${n(count)} directory`, `listing ${n(count)} directories`);
 		const settled =
 			kind === "search"
-				? plural(count, `searched for ${count} pattern`, `searched for ${count} patterns`)
+				? plural(count, `searched for ${n(count)} pattern`, `searched for ${n(count)} patterns`)
 				: kind === "read"
-					? plural(count, `read ${count} file`, `read ${count} files`)
-					: plural(count, `listed ${count} directory`, `listed ${count} directories`);
+					? plural(count, `read ${n(count)} file`, `read ${n(count)} files`)
+					: plural(count, `listed ${n(count)} directory`, `listed ${n(count)} directories`);
 		parts.push(phase === "active" ? text : settled);
 	};
 	const thinking = groupThinkingMs(group, now);
@@ -340,9 +392,15 @@ export function collapsedSummary(group: CollapsedGroup, now?: number): string {
 	if (group.listCount > 0) fragment("list", group.listCount);
 	if (group.mcpCallCount > 0) {
 		const server = group.mcpServers.length > 0 ? group.mcpServers.join(", ") : "MCP";
-		const active = plural(group.mcpCallCount, `querying ${server}`, `querying ${server} ${group.mcpCallCount} times`);
-		const settled = plural(group.mcpCallCount, `queried ${server}`, `queried ${server} ${group.mcpCallCount} times`);
+		const active = plural(group.mcpCallCount, `querying ${server}`, `querying ${server} ${n(group.mcpCallCount)} times`);
+		const settled = plural(group.mcpCallCount, `queried ${server}`, `queried ${server} ${n(group.mcpCallCount)} times`);
 		parts.push(phase === "active" ? active : settled);
+	}
+	// CC CollapsedReadSearchContent.tsx:403-413 — bash counted last (CC gates it
+	// on fullscreen; pi has no fullscreen, so every grouped bash call counts).
+	if (group.bashCount > 0) {
+		const noun = plural(group.bashCount, "bash command", "bash commands");
+		parts.push(`${phase === "active" ? "running" : "ran"} ${n(group.bashCount)} ${noun}`);
 	}
 	const text = parts.join(", ");
 	// CC CollapsedReadSearchContent: first fragment capitalized ('Read 3 files, searched for…').
@@ -359,6 +417,8 @@ export function formatCollapseHint(hint: CollapseHint, displayPath: (path: strin
 				? hint.value
 				: hint.kind === "pattern"
 					? `"${hint.value}"`
-					: `$ ${hint.value}`;
+					: hint.kind === "comment"
+						? hint.value
+						: `$ ${hint.value}`;
 	return text.length > 300 ? `${text.slice(0, 299)}…` : text;
 }

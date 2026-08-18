@@ -15,7 +15,7 @@ const TURN_COMPLETION_VERBS = [
 const TURN_FOOTER_MIN_MS = 30_000;
 
 // dsh-tui transcript.ts: formatTurnDuration — `45s`, `1m 23s`, `2h 5m 1s`.
-function formatTurnDuration(ms: number): string {
+export function formatTurnDuration(ms: number): string {
 	const elapsed = Math.max(0, ms);
 	if (elapsed < 60_000) return `${Math.floor(elapsed / 1000)}s`;
 	let seconds = Math.round((elapsed % 60_000) / 1000);

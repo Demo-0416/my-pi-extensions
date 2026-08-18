@@ -59,16 +59,22 @@ function resultText(result: unknown): string {
 	return r.content.filter((b) => b.type === "text").map((b) => b.text ?? "").join("\n");
 }
 
+// CC figures.ts: BLACK_CIRCLE = darwin ? '⏺' : '●' — same glyph the builtin
+// tool rows use, so MCP rows line up visually with Read/Bash/Grep.
+const BLACK_CIRCLE = process.platform === "darwin" ? "⏺" : "●";
+
 function statusDot(ctx: RenderContext, theme: Theme): string {
-	if (ctx.isError) return theme.fg("error", "●");
+	if (ctx.isError) return theme.fg("error", BLACK_CIRCLE);
 	if (ctx.isPartial) {
 		if (ctx.executionStarted) {
-			armBlink();
-			return currentBlinkPhase() ? theme.fg("warning", "●") : " ";
+			// CC ToolUseLoader: while unresolved, dim default color, blink on/off.
+			// Register this component so blinkTick toggles it too.
+			armBlink(ctx.toolCallId, ctx.invalidate);
+			return currentBlinkPhase() ? theme.fg("dim", BLACK_CIRCLE) : " ";
 		}
-		return theme.fg("dim", "●");
+		return theme.fg("dim", BLACK_CIRCLE);
 	}
-	return theme.fg("success", "●");
+	return theme.fg("success", BLACK_CIRCLE);
 }
 
 /**
@@ -110,7 +116,9 @@ export function registerMcpTools(pi: ExtensionAPI): void {
 					if (mcpOutputMode === "hidden") return makeText(ctx.lastComponent, "");
 					const dot = statusDot(ctx, theme);
 					const summary = summarizeArgs(args);
-					const header = `${dot} ${theme.fg("toolTitle", theme.bold(label))}${summary ? ` ${theme.fg("accent", summary)}` : ""}`;
+					// CC AssistantToolUseMessage: bold DEFAULT-color name (no orange
+					// toolTitle) + summary in default color.
+					const header = `${dot} ${theme.bold(label)}${summary ? ` ${summary}` : ""}`;
 					return makeText(ctx.lastComponent, header);
 				},
 				renderResult(result: unknown, { expanded, isPartial }: { expanded: boolean; isPartial: boolean }, theme: Theme, ctx: RenderContext) {

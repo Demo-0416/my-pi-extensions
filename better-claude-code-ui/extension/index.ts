@@ -5,8 +5,10 @@
  *   1. themes/            six CC color themes (JSON, loaded by pi)
  *   2. chrome             banner (welcome box), spinner, status line, turn footer
  *   3. tools/             CC-style tool rendering (builtins, diff, grouping, mcp)
+ *   4. thinking           CC-style thinking title + hidden label + spinner row
  *
  * Only pi public APIs are used; no prototype/monkey patches.
+ * See ALIGNMENT.md for the per-module CC source mapping.
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { registerSpinner } from "./spinner.js";
@@ -17,6 +19,7 @@ import { registerGrouping } from "./tools/grouping.js";
 import { registerBuiltins } from "./tools/builtins.js";
 import { registerMcpTools } from "./tools/mcp.js";
 import { registerCommands } from "./commands.js";
+import { registerThinking } from "./thinking.js";
 
 export default function (pi: ExtensionAPI) {
 	// Layer 2: chrome
@@ -30,26 +33,9 @@ export default function (pi: ExtensionAPI) {
 	registerBuiltins(pi);
 	registerMcpTools(pi);
 
+	// Layer 4: thinking (transformer + hidden label + spinner-row coordination)
+	registerThinking(pi);
+
 	// Commands + shortcuts
 	registerCommands(pi);
-
-	// ∴ thinking marker: prefix thinking blocks with the CC glyph.
-	pi.registerMarkdownTransformer((markdown, { messageType }) => {
-		if (messageType !== "assistant-thinking") return markdown;
-		const lines = markdown.split("\n");
-		if (lines.length === 0) return markdown;
-		lines[0] = `∴ ${lines[0]}`;
-		return lines.join("\n");
-	});
-
-	// CC AssistantThinkingMessage: collapsed thinking shows `∴ Thinking` (dim italic).
-	// pi renders hidden thinking as a static label — set it to the CC glyph.
-	pi.on("session_start", async (_event, ctx) => {
-		if (ctx.mode !== "tui") return;
-		try {
-			ctx.ui.setHiddenThinkingLabel?.("∴ Thinking");
-		} catch {
-			/* older pi without setHiddenThinkingLabel */
-		}
-	});
 }

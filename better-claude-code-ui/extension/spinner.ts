@@ -15,7 +15,8 @@ function defaultCharacters(): string[] {
 const FRAMES = defaultCharacters();
 // Forward then reverse — CC's SpinnerAnimationRow plays the loop ping-pong.
 const SPINNER = [...FRAMES, ...[...FRAMES].reverse()];
-const INTERVAL_MS = 170;
+// CC Spinner: 120ms per frame.
+const INTERVAL_MS = 120;
 
 // claude-code-main/src/constants/spinnerVerbs.ts — SPINNER_VERBS, full list.
 const VERBS = [
@@ -57,8 +58,14 @@ function sampleVerb(): string {
 	return VERBS[Math.floor(Math.random() * VERBS.length)] ?? "Working";
 }
 
+/** The active turn's spinner verb (for other modules restoring the working message). */
+export function currentWorkingVerb(): string {
+	return verb;
+}
+
+let verb = sampleVerb();
+
 export function registerSpinner(pi: ExtensionAPI): void {
-	let verb = sampleVerb();
 
 	pi.on("session_start", async (_event, ctx) => {
 		if (!ctx.hasUI) return;
