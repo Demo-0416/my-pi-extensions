@@ -277,7 +277,11 @@ class CachedTextComponent implements Component {
 }
 
 function cachedText(last: unknown, text: string): CachedTextComponent {
-	const t = (last as CachedTextComponent | undefined) ?? new CachedTextComponent();
+	// AUDIT §2 P0-4 — only reuse `last` when it is actually a CachedTextComponent.
+	// Ctrl+O on a write-new-file result swaps the component to a DiffCardComponent
+	// on expand; collapsing again lands back here with that DiffCardComponent as
+	// `last`, and calling .setText on it throws TypeError (→ pi's raw fallback).
+	const t = last instanceof CachedTextComponent ? last : new CachedTextComponent();
 	t.setText(text);
 	return t;
 }

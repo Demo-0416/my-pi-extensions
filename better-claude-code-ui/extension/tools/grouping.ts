@@ -778,7 +778,10 @@ export function armBlink(toolCallId: string, invalidate: () => void): void {
 }
 
 export function makeText(last: unknown, text: string): Text {
-	const t = (last as Text | undefined) ?? new Text("", 0, 0);
+	// AUDIT §2 P0-4 — only reuse `last` when it is actually a Text. On expand
+	// toggles the previous component may be a DiffCardComponent (write/edit) whose
+	// setText is undefined; blindly casting + setText throws TypeError.
+	const t = last instanceof Text ? last : new Text("", 0, 0);
 	t.setText(text);
 	return t;
 }
