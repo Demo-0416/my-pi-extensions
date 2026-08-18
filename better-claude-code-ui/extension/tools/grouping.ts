@@ -830,6 +830,13 @@ function branchContinuation(theme: Theme): string {
 	return `${theme.fg("dim", "│")} `;
 }
 
+/** AUDIT §5:754 — continuation under the LAST member (drawn with `└`): the tree
+ *  is closed, so the vertical rail stops. Two spaces keep the result body aligned
+ *  in the same column the `│` would have occupied, without drawing the rail. */
+function branchClosedContinuation(_theme: Theme): string {
+	return "  ";
+}
+
 /** A member's glance line: `├ ⏺ Read(path)` or `└ ⏺ Bash(cmd)` (CC name/summary colors). */
 function glanceLine(m: ToolRecord, index: number, total: number, theme: Theme, displayPath: (p: string) => string): string {
 	const prefix = branchPrefix(index, total, theme);
@@ -898,10 +905,15 @@ export function renderGroupPreview(
 	const lines: string[] = [];
 	for (let i = 0; i < g.members.length; i++) {
 		const m = g.members[i]!;
+		const isLast = i === g.members.length - 1;
 		lines.push(glanceLine(m, i, g.members.length, theme, displayPath));
 		const resultLine = renderResultLine(m);
 		if (resultLine) {
-			const cont = branchContinuation(theme);
+			// AUDIT §5:754 — the last member's glance line uses `└` (the closer), so
+			// its result continuation must NOT re-draw the vertical `│` — the tree is
+			// closed. Non-last members continue with `│`; the last uses blank padding
+			// so the branch line stops at the closer instead of running past it.
+			const cont = isLast ? branchClosedContinuation(theme) : branchContinuation(theme);
 			for (const rl of resultLine.split("\n")) {
 				lines.push(`${cont}${rl}`);
 			}
