@@ -105,7 +105,13 @@ export function registerThinking(pi: ExtensionAPI): void {
 		}
 	});
 
-	pi.on("message_end", async (_event, ctx) => {
+	pi.on("message_end", async (event, ctx) => {
+		// AUDIT §5 thinking.ts:114 (P3 correctness): message_end fires for user
+		// prompts (pi agent-loop.js:53) and toolResult messages (:551) too, not
+		// just assistant messages. Only assistant messages carry thinking, so
+		// ignore the rest — otherwise a user/tool message_end arriving while a
+		// block is open would wrongly clear the (thinking) spinner state.
+		if (event.message?.role !== "assistant") return;
 		// Abort path: thinking_end may never fire when the stream dies (pi goes
 		// through message_end with a failure message), leaving the spinner stuck
 		// on `(thinking)`. Restore the verb when a block was left open — CC
