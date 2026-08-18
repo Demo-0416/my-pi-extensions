@@ -12,7 +12,6 @@ import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { setExtraDetail } from "./tools/builtins.js";
 import { bustGroupingSettingsCache } from "./tools/grouping.js";
-import { getMcpOutputMode, setMcpOutputMode, type McpOutputMode } from "./tools/mcp.js";
 
 const SETTINGS_KEY_GROUP = "groupToolCalls";
 const SETTINGS_KEY_EXTRA_DETAIL = "ccToolsExtraDetail";
@@ -100,9 +99,9 @@ export function registerCommands(pi: ExtensionAPI): void {
 		bustGroupingSettingsCache();
 	};
 
-	// /cc-tools — control tool UI: grouping, extra detail, MCP output mode.
+	// /cc-tools — control tool UI: grouping, extra detail.
 	pi.registerCommand("cc-tools", {
-		description: "Control CC tool UI: grouping, extra detail, MCP output mode",
+		description: "Control CC tool UI: grouping, extra detail",
 		async handler(args, ctx) {
 			const parts = args.trim().toLowerCase().split(/\s+/).filter(Boolean);
 			const sub = parts[0] ?? "status";
@@ -113,10 +112,8 @@ export function registerCommands(pi: ExtensionAPI): void {
 						[
 							`Tool grouping: ${groupingEnabled ? "on" : "off"}`,
 							`Extra detail: ${extraDetail ? "on" : "off"} (ctrl+shift+o)`,
-							`MCP output: ${getMcpOutputMode()}`,
 							"  /cc-tools group on|off|toggle",
 							"  /cc-tools detail on|off|toggle",
-							"  /cc-tools mcp hidden|summary|preview",
 						].join("\n"),
 						"info",
 					);
@@ -144,17 +141,6 @@ export function registerCommands(pi: ExtensionAPI): void {
 				} else {
 					setDetail(!extraDetail);
 					if (ctx.hasUI) ctx.ui.notify(`Extra detail: ${extraDetail ? "on" : "off"}`, "info");
-				}
-				return;
-			}
-
-			if (sub === "mcp") {
-				const v = parts[1] as McpOutputMode | undefined;
-				if (v === "hidden" || v === "summary" || v === "preview") {
-					setMcpOutputMode(v);
-					if (ctx.hasUI) ctx.ui.notify(`MCP output: ${v}`, "info");
-				} else if (ctx.hasUI) {
-					ctx.ui.notify("Usage: /cc-tools mcp hidden|summary|preview", "error");
 				}
 				return;
 			}

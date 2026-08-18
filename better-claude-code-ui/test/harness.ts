@@ -219,7 +219,7 @@ export class FakePi {
 	sessionName: string | undefined;
 	labels = new Map<string, string | undefined>();
 	activeTools: string[] = [];
-	/** getAllTools() 的返回（mcp.ts 依赖它的形状） */
+	/** getAllTools() 的返回 */
 	allToolsList: any[] = [];
 	commandsList: any[] = [];
 	thinkingLevel: string = "medium";

@@ -12,8 +12,6 @@ test("扩展加载：7 个内置工具全部注册", async () => {
 	for (const name of ["read", "bash", "edit", "write", "grep", "find", "ls"]) {
 		assert.ok(pi.tools.has(name), `tool ${name} registered`);
 	}
-	// 注：mcp 通配工具的注册是 AUDIT.md B1 条目（mcp.ts:100 死代码），
-	// 修好前 getAllTools() 为空时不注册任何东西，这里不做断言。
 });
 
 test("扩展加载：session_start 后 footer / header / 命令 / markdown transformer 就位", async () => {
