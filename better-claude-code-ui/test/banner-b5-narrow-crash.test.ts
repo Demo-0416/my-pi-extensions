@@ -17,7 +17,8 @@ function bind(banner: BannerComponent, theme: FakeTheme) {
 	return { render: (w: number): string[] => banner.render(w, theme as any) };
 }
 
-function makeBanner(cwd: string, resumed?: string, model?: string) {
+function makeBanner(cwd: string, resumed?: string, model?: string, full = true) {
+	// full 默认 true：盒装档只在 full 模式渲染；传 false 测默认 condensed 路径。
 	return new BannerComponent({
 		model: () => model,
 		cwd,
@@ -25,6 +26,7 @@ function makeBanner(cwd: string, resumed?: string, model?: string) {
 		title: () => (resumed ? "sess title" : undefined),
 		skills: [],
 		extensions: [],
+		full,
 	});
 }
 
@@ -46,4 +48,25 @@ test("width 0 也安全", () => {
 	assert.doesNotThrow(() => {
 		plain(bind(makeBanner("~/x"), theme), 0);
 	});
+});
+
+test("默认（非 full）condensed 路径：无盒边框、极窄不抛不超宽", () => {
+	// AUDIT §6 P1 CondensedLogo — 默认启动是无边框 3 行 logo，盒装保留给
+	// 新版本/首次项目（info.full）。
+	const theme = new FakeTheme("claude-code-dark");
+	const rows = plain(bind(makeBanner("~/deep/nested/project", "85d19568", "claude-sonnet-4", false), theme), 80);
+	assert.ok(rows.length >= 3, "condensed 应渲染出 ≥3 行");
+	for (const r of rows) {
+		assert.ok(!/[╭╰│]/.test(r), `condensed 不应有盒边框字符: ${JSON.stringify(r)}`);
+	}
+	assert.ok(rows.some((r) => r.includes("pi agent")), "应包含 wordmark");
+	// 极窄宽度同样不抛异常、不超宽。
+	for (let w = 1; w <= 20; w++) {
+		assert.doesNotThrow(() => {
+			const narrow = plain(bind(makeBanner("~/deep/nested/project", "85d19568", "claude-sonnet-4", false), theme), w);
+			for (const r of narrow) {
+				assert.ok(vw(r) <= w, `w=${w} 行宽 ${vw(r)} 超过 ${w}: ${JSON.stringify(r)}`);
+			}
+		}, `condensed width=${w} 不应抛异常`);
+	}
 });

@@ -22,7 +22,7 @@
  * On resume/fork the session id (first 8 chars) + session name render as a
  * dim `resumed <id> · <title>` identity line (CC shows the session on resume).
  */
-import { existsSync, readdirSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI, Theme } from "@earendil-works/pi-coding-agent";
@@ -56,6 +56,13 @@ export interface BannerInfo {
 	welcome?: string;
 	skills?: readonly string[];
 	extensions?: readonly string[];
+	/**
+	 * Whether to show the full boxed banner. CC only shows the boxed two-column
+	 * LogoV2 when there are new release notes or it's the first time in this
+	 * project (`hasReleaseNotes || showOnboarding`, LogoV2.tsx:178); otherwise
+	 * the default startup is the borderless 3-line CondensedLogo. Default false.
+	 */
+	full?: boolean;
 }
 
 function center(text: string, width: number): string {
@@ -214,8 +221,12 @@ export class BannerComponent {
 		if (this.cacheLines && this.cacheKey === key && this.cacheTheme === theme) {
 			return this.cacheLines;
 		}
-		const rows =
-			width >= FULL_MIN_WIDTH
+		// Default startup is the borderless condensed logo; the boxed banner is
+		// reserved for new-version / first-project starts (info.full), mirroring
+		// CC LogoV2.tsx:178 `hasReleaseNotes || showOnboarding` (AUDIT §6 P1).
+		const rows = !this.info.full
+			? this.renderCondensed(width, theme)
+			: width >= FULL_MIN_WIDTH
 				? this.renderWide(width, theme)
 				: width >= MIN_BOXED_WIDTH
 					? this.renderBoxed(width, theme)
@@ -237,6 +248,46 @@ export class BannerComponent {
 		if (this.info.resumed === undefined) return undefined;
 		const title = this.info.title();
 		return `resumed ${this.info.resumed}` + (title ? ` · ${title}` : "");
+	}
+
+	/**
+	 * The default startup logo: a borderless stack, `Clawd`-style mark left of a
+	 * 3-line info column (`pi agent vX.Y.Z` / model / cwd), plus the resumed line
+	 * when resuming. Mirrors CC CondensedLogo.tsx (row layout, gap 2, dim info,
+	 * bold name + dim version) — no box chrome (AUDIT §6 P1 CondensedLogo).
+	 */
+	private renderCondensed(width: number, theme: Theme): string[] {
+		const dim = (s: string): string => theme.fg("dim", s);
+		const accent = (s: string): string => theme.fg("accent", s);
+		const bold = (s: string): string => theme.bold(s);
+
+		const logoWidth = Math.max(...PI_LOGO.map((row) => visibleWidth(row)));
+		// Too narrow to sit the info column beside the mark → borderless centered
+		// stack (same degradation as the compact box, no overflow).
+		if (width < logoWidth + 4 + 8) return this.renderCompactPlain(width, theme);
+		// CC CondensedLogo.tsx:59 — text width accounts for mark + gap + padding.
+		const textWidth = Math.max(width - logoWidth - 4, 20);
+		const model = this.info.model() ?? "";
+		const cwd = truncatePath(this.info.cwd, textWidth);
+		const resumed = this.resumedLine();
+
+		// Info column: name+version, model, cwd, (resumed).
+		const info: string[] = [
+			`${bold("pi agent")} ${dim(`v${VERSION}`)}`,
+			...(model ? [dim(truncateToWidth(model, textWidth, "…"))] : []),
+			dim(cwd),
+			...(resumed ? [dim(truncateToWidth(resumed, textWidth, "…"))] : []),
+		];
+
+		// Lay the mark alongside the info column, top-aligned, gap of 2 spaces.
+		const height = Math.max(PI_LOGO.length, info.length);
+		const rows: string[] = [];
+		for (let i = 0; i < height; i++) {
+			const art = PI_LOGO[i] ?? " ".repeat(logoWidth);
+			const line = i < info.length ? info[i] : "";
+			rows.push(truncateToWidth(` ${accent(art)}  ${line}`, Math.max(1, width), ""));
+		}
+		return rows;
 	}
 
 	private renderWide(width: number, theme: Theme): string[] {
@@ -464,6 +515,37 @@ export class BannerComponent {
 	}
 }
 
+/** Remember at most this many recently-seen project cwds in the banner state. */
+const SEEN_PROJECTS_MAX = 50;
+
+/**
+ * CC LogoV2.tsx:178 shows the boxed logo only on `hasReleaseNotes ||
+ * showOnboarding` — i.e. a new version or the first time in this project.
+ * Mirror that with a small state file: full banner when the recorded pi
+ * version changed or this cwd hasn't been seen, condensed otherwise. Any
+ * fs error degrades to condensed (never blocks startup).
+ */
+function shouldShowFullBanner(cwd: string): boolean {
+	const stateDir = join(homedir(), ".pi", "agent");
+	const stateFile = join(stateDir, "cc-ui-banner.json");
+	let state: { version?: string; projects?: string[] } = {};
+	try {
+		state = JSON.parse(readFileSync(stateFile, "utf8")) as typeof state;
+	} catch {
+		// Missing/corrupt state → treat as first run.
+	}
+	const projects = Array.isArray(state.projects) ? state.projects.filter((p) => typeof p === "string") : [];
+	const full = state.version !== VERSION || !projects.includes(cwd);
+	try {
+		const next = [cwd, ...projects.filter((p) => p !== cwd)].slice(0, SEEN_PROJECTS_MAX);
+		mkdirSync(stateDir, { recursive: true });
+		writeFileSync(stateFile, JSON.stringify({ version: VERSION, projects: next }));
+	} catch {
+		// Unwritable state dir: just show whatever `full` resolved to this time.
+	}
+	return full;
+}
+
 export function registerBanner(pi: ExtensionAPI): void {
 	pi.on("session_start", async (event, ctx) => {
 		if (ctx.mode !== "tui") return;
@@ -478,6 +560,7 @@ export function registerBanner(pi: ExtensionAPI): void {
 			title: () => ctx.sessionManager.getSessionName(),
 			skills: discoverSkills(),
 			extensions: discoverExtensions(),
+			full: shouldShowFullBanner(ctx.cwd),
 		};
 		const banner = new BannerComponent(info);
 		ctx.ui.setHeader((_tui, theme) => ({

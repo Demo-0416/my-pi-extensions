@@ -19,6 +19,7 @@ function bind(banner: BannerComponent, theme: FakeTheme) {
 }
 
 function makeBanner(cwd: string, resumed?: string, model?: string) {
+	// full: true — 盒装档只在 full 模式渲染（默认启动是 condensed 无边框栈）。
 	return new BannerComponent({
 		model: () => model,
 		cwd,
@@ -26,6 +27,7 @@ function makeBanner(cwd: string, resumed?: string, model?: string) {
 		title: () => (resumed ? "some session title" : undefined),
 		skills: [],
 		extensions: [],
+		full: true,
 	});
 }
 
