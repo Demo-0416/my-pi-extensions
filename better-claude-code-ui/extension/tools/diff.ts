@@ -382,7 +382,12 @@ export function shouldUseSplit(diff: ParsedDiff, width: number, maxRows = MAX_PR
 	for (const line of diff.lines.slice(0, maxRows)) {
 		if (line.type === "sep") continue;
 		contentLines += 1;
-		if (tabs(line.content).length > codeWidth) wrapCandidates += 1;
+		// Measure display columns, not UTF-16 code units: a CJK line has half the
+		// .length of its rendered width, so `.length > codeWidth` under-counts wrap
+		// candidates and misclassifies a wide CJK diff as "narrow" → wrongly picks
+		// the split layout (AUDIT §5 diff.ts:372). content is raw (no ANSI) and
+		// already tab-expanded, so visibleWidth is the true column count.
+		if (visibleWidth(tabs(line.content)) > codeWidth) wrapCandidates += 1;
 	}
 	if (contentLines === 0) return true;
 	if (wrapCandidates >= SPLIT_MAX_WRAP_LINES) return false;
