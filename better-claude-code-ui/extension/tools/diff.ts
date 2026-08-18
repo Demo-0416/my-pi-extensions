@@ -278,7 +278,13 @@ function diffDashedRule(s: DiffSgr, width: number): string {
 function maxLineNumber(lines: readonly DiffLine[]): number {
 	let max = 0;
 	for (const line of lines) {
-		const value = line.oldNum ?? line.newNum ?? 0;
+		// The gutter is sized once and reused for every rendered number: unified
+		// renders newNum for ctx/add and oldNum for del; split additionally
+		// renders oldNum for ctx on the left. Sizing off `oldNum ?? newNum` would
+		// ignore a ctx line's (rendered) newNum, so a net-add trailing hunk whose
+		// widest new-side number sits on a ctx line (no add line reaches it)
+		// overflows the gutter by a column (AUDIT §5 diff.ts:281). Cover both.
+		const value = Math.max(line.oldNum ?? 0, line.newNum ?? 0);
 		if (value > max) max = value;
 	}
 	return max;
