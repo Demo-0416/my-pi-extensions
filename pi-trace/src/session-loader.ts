@@ -13,7 +13,7 @@
  * - turn 切分：每条 assistant 消息开一个新 turn；其前的 user 消息归入该 turn；
  *   tool 记录归入调用它的 assistant 所在 turn（pi 语义：一个 turn = 一次 LLM 响应 + 其工具调用）
  */
-import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
+import { closeSync, existsSync, openSync, readSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import type { SessionSummary, TraceRecord, TraceSession, TraceUsage } from './model.ts';
 import { groupRecordsByTurn } from './model.ts';
@@ -126,28 +126,10 @@ export function reconstructFromSessionFile(
   fallbackSessionId?: string,
 ): TraceSession | null {
   if (!existsSync(sessionFile)) return null;
-  const lines = readFileSync(sessionFile, 'utf8').split('\n');
-  let header: SessionHeader | null = null;
-  const entries: SessionEntry[] = [];
-  for (const line of lines) {
-    const trimmed = line.trim();
-    if (trimmed === '') continue;
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(trimmed);
-    } catch {
-      continue;
-    }
-    const entry = parsed as SessionEntry;
-    if (entry.type === 'session' && header === null) {
-      header = entry as unknown as SessionHeader;
-      continue;
-    }
-    entries.push(entry);
-  }
-  if (header === null) return null;
+  const content = readFileSync(sessionFile, 'utf8');
 
-  const sessionId = header.id ?? fallbackSessionId ?? 'unknown';
+  let header: SessionHeader | null = null;
+  let sessionId = fallbackSessionId ?? 'unknown';
   const records: TraceRecord[] = [];
   // toolCallId → args（assistant 消息的 toolCall 块），供 toolResult 记录补全 args。
   const toolArgsById = new Map<string, Record<string, unknown>>();
@@ -165,7 +147,28 @@ export function reconstructFromSessionFile(
     return full;
   };
 
-  for (const entry of entries) {
+  // 逐行处理：indexOf('\n') 避免 split 产生大字符串数组，entries 不留存。
+  let lineStart = 0;
+  while (lineStart < content.length) {
+    const lineEnd = content.indexOf('\n', lineStart);
+    const line = lineEnd === -1 ? content.slice(lineStart) : content.slice(lineStart, lineEnd);
+    lineStart = lineEnd === -1 ? content.length : lineEnd + 1;
+    const trimmed = line.trim();
+    if (trimmed === '') continue;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(trimmed);
+    } catch {
+      continue;
+    }
+    const entry = parsed as SessionEntry;
+    if (entry.type === 'session' && header === null) {
+      header = entry as unknown as SessionHeader;
+      sessionId = header.id ?? fallbackSessionId ?? 'unknown';
+      continue;
+    }
+    if (header === null) continue;
+    {
     if (entry.type === 'message' && entry.message) {
       const message = entry.message;
       const startedAt = typeof message.timestamp === 'number' ? message.timestamp : Date.parse(entry.timestamp);
@@ -245,6 +248,7 @@ export function reconstructFromSessionFile(
       });
       continue;
     }
+    }
   }
   // 悬挂的 user 消息（无后续 assistant）归入最后一个 turn 之后的 null 区。
   for (const record of pendingUser) record.turn = null;
@@ -322,17 +326,19 @@ export function findSessionFileById(sessionId: string): string | null {
   return sessionFileIndex.byId.get(sessionId) ?? null;
 }
 
-/** 读 session 文件头（第一行）。 */
+/** 读 session 文件头（第一行）。只读前 8KB，不加载整个文件。 */
 function readHeader(path: string): SessionHeader | null {
-  let firstLine: string;
   try {
-    firstLine = readFileSync(path, 'utf8').split('\n', 1)[0] ?? '';
-  } catch {
-    return null;
-  }
-  try {
-    const parsed = JSON.parse(firstLine) as SessionHeader;
-    return parsed.type === 'session' ? parsed : null;
+    const fd = openSync(path, 'r');
+    try {
+      const buf = Buffer.alloc(8192);
+      const bytesRead = readSync(fd, buf, 0, 8192, 0);
+      const firstLine = buf.subarray(0, bytesRead).toString('utf8').split('\n', 1)[0] ?? '';
+      const parsed = JSON.parse(firstLine) as SessionHeader;
+      return parsed.type === 'session' ? parsed : null;
+    } finally {
+      closeSync(fd);
+    }
   } catch {
     return null;
   }
@@ -362,24 +368,22 @@ export function listSessions(liveIds: ReadonlySet<string> = new Set()): SessionS
   return [...byId.values()].sort((a, b) => b.startedAt - a.startedAt);
 }
 
-/** 统计 session 文件里的 assistant 消息数（重建会话的 turn 数近似）。 */
+/** 统计 session 文件里的 assistant 消息数（近似值，供会话列表用）。
+ *  用 indexOf 计数而非 split+JSON.parse，避免大文件 OOM。 */
 function countAssistantMessages(sessionFile: string): number {
-  let count = 0;
   try {
-    for (const line of readFileSync(sessionFile, 'utf8').split('\n')) {
-      const trimmed = line.trim();
-      if (trimmed === '' || !trimmed.includes('"assistant"')) continue;
-      try {
-        const entry = JSON.parse(trimmed) as SessionEntry;
-        if (entry.type === 'message' && entry.message?.role === 'assistant') count += 1;
-      } catch {
-        // skip
-      }
+    const content = readFileSync(sessionFile, 'utf8');
+    const pattern = '"role":"assistant"';
+    let count = 0;
+    let idx = content.indexOf(pattern);
+    while (idx !== -1) {
+      count++;
+      idx = content.indexOf(pattern, idx + pattern.length);
     }
+    return count;
   } catch {
-    // skip
+    return 0;
   }
-  return count;
 }
 
 /**

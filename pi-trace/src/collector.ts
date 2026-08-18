@@ -179,7 +179,7 @@ function extractRequestInfo(payload: unknown, fallbackModel?: string, fallbackPr
     }
   }
   const promptSnapshot = system !== '' || toolList.length > 0
-    ? { system, tools: toolList }
+    ? { system: truncateField(system) as string, tools: toolList }
     : undefined;
   return {
     requestConfig,
@@ -313,6 +313,8 @@ export class Collector {
     };
     start.recordId = record.id;
     this.llmStarts.push(start);
+    // 防止未闭合的 LLM 请求堆积（error/interruption 时 onMessageEnd 不会触发）。
+    if (this.llmStarts.length > 10) this.llmStarts.shift();
     this.addRecord(record);
   }
 
@@ -373,8 +375,8 @@ export class Collector {
       if (existing !== undefined) {
         // 闭合进行中的记录：补全字段后落盘 + 广播。
         existing.text = oneLine(textFromContent(message.content));
-        existing.fullText = textFromContent(message.content);
-        existing.thinking = thinkingFromContent(message.content) || undefined;
+        existing.fullText = truncateField(textFromContent(message.content)) as string;
+        existing.thinking = truncateField(thinkingFromContent(message.content)) as string || undefined;
         existing.toolCalls = toolCallsFromContent(message.content);
         existing.isError = message.stopReason === 'error';
         existing.model = start?.model ?? message.model;
@@ -394,8 +396,8 @@ export class Collector {
         startedAt,
         durationMs: null,
         text: oneLine(textFromContent(message.content)),
-        fullText: textFromContent(message.content),
-        thinking: thinkingFromContent(message.content) || undefined,
+        fullText: truncateField(textFromContent(message.content)) as string,
+        thinking: truncateField(thinkingFromContent(message.content)) as string || undefined,
         toolCalls: toolCallsFromContent(message.content),
         isError: message.stopReason === 'error',
         model: start?.model ?? message.model,
