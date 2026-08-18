@@ -334,9 +334,12 @@ export class Collector {
     usage?: unknown;
   }): void {
     if (message.role === 'user') {
+      // source 不是 interactive 的 user 消息 → context（系统注入的上下文/提醒）。
+      const sourceKind = (this.lastInputSource as { kind?: string } | null)?.kind;
+      const isContext = sourceKind !== undefined && sourceKind !== 'interactive';
       const record: TraceRecord = {
         id: this.nextId(),
-        kind: 'user',
+        kind: isContext ? 'context' : 'user',
         turn: this.currentTurn,
         startedAt: typeof message.timestamp === 'number' ? message.timestamp : Date.now(),
         durationMs: null,
@@ -469,7 +472,7 @@ export class Collector {
   onSessionCompact(summary: string, tokensBefore?: number): void {
     const record: TraceRecord = {
       id: this.nextId(),
-      kind: 'compaction',
+      kind: 'compacted',
       turn: this.currentTurn,
       startedAt: Date.now(),
       durationMs: null,

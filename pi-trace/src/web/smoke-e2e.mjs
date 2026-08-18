@@ -35,6 +35,12 @@ const session = {
       isError: false, source: { kind: 'interactive' },
     },
     {
+      id: 'r1b', kind: 'context', turn: 0, startedAt: now - 118_500, durationMs: null,
+      text: '\u003csystem-reminder\u003eSkills loaded: lark-markdown, lark-im\u003c/system-reminder\u003e',
+      fullText: '\u003csystem-reminder\u003eSkills loaded: lark-markdown, lark-im\u003c/system-reminder\u003e',
+      isError: false, source: { kind: 'extension' },
+    },
+    {
       id: 'r2', kind: 'assistant', turn: 0, startedAt: now - 118_000, durationMs: 8_000,
       text: "What I can do: I'm a coding agent. Here's my core capability set.",
       fullText: "What I can do: I'm a coding agent running on pi. Here's my core capability set:\n\n- File operations (read/write/edit)\n- Shell commands (bash)\n- Web search and fetch\n- Lark/Feishu operations\n\nAlways-available tools: File operations, Shell, Web search.",

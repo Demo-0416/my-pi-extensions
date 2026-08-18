@@ -237,7 +237,7 @@ export function reconstructFromSessionFile(
     }
     if (entry.type === 'compaction') {
       push({
-        kind: 'compaction',
+        kind: 'compacted',
         turn: currentTurn < 0 ? null : currentTurn,
         startedAt: Date.parse(entry.timestamp),
         text: oneLine(entry.summary ?? `compaction (${entry.tokensBefore ?? '?'} tokens before)`),

@@ -5,8 +5,8 @@
  * Web/TUI/历史回放都是 TraceRecord 的消费者。
  */
 
-/** 记录种类（对齐 dsh trajectory-record.ts 的 TrajectoryCellKind 闭集）。 */
-export type RecordKind = 'system' | 'user' | 'assistant' | 'tool' | 'compaction';
+/** 记录种类（对齐 dsh TrajectoryCellKind）。 */
+export type RecordKind = 'system' | 'user' | 'context' | 'assistant' | 'tool' | 'compacted';
 
 /** 一次 LLM 调用的 token / 费用账（字段名对齐 pi session-format 的 Usage）。 */
 export interface TraceUsage {

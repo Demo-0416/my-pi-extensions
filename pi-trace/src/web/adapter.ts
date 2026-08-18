@@ -39,7 +39,7 @@ interface PromptSnapshotJson {
 
 interface RecordJson {
   id: string
-  kind: 'system' | 'user' | 'assistant' | 'tool' | 'compaction'
+  kind: 'system' | 'user' | 'context' | 'assistant' | 'tool' | 'compacted'
   turn: number | null
   startedAt: number
   durationMs: number | null
@@ -166,9 +166,9 @@ export function adaptSession(session: SessionJson): AdapterResult {
       continue
     }
 
-    if (record.kind === 'user') {
+    if (record.kind === 'user' || record.kind === 'context') {
       nodes.push({
-        kind: 'user',
+        kind: record.kind,
         seq: ++seq,
         time: record.startedAt,
         content: [{ type: 'text', text: record.fullText ?? record.text }],
@@ -303,7 +303,7 @@ export function adaptSession(session: SessionJson): AdapterResult {
       continue
     }
 
-    if (record.kind === 'compaction') {
+    if (record.kind === 'compacted') {
       const completed = record.durationMs !== null
       const endTime = completed ? record.startedAt + record.durationMs! : null
       requests.push({

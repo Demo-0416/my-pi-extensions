@@ -102,6 +102,21 @@ if (!liveAssistant?.promptSnapshot) throw new Error('M9: promptSnapshot not capt
 if (!liveTool?.callId) throw new Error('M9: callId not captured');
 if (liveAssistant?.usage?.reasoning !== 5) throw new Error('M9: reasoning tokens not captured');
 console.log('M9 fields OK');
+
+// context 分类校验：source !== 'interactive' 的 user 消息 → context kind
+collector.onInput({ kind: 'extension' });
+collector.onMessageEnd({ role: 'user', content: 'system-reminder: skill loaded', timestamp: Date.now() });
+const contextRecord = live.records.find(r => r.kind === 'context');
+if (!contextRecord) throw new Error('context: source=extension should classify as context kind');
+if (!contextRecord.text.includes('system-reminder')) throw new Error('context: text mismatch');
+console.log('context classification OK');
+
+// source=interactive 的 user 消息仍然是 user kind
+collector.onInput({ kind: 'interactive' });
+collector.onMessageEnd({ role: 'user', content: 'second user message', timestamp: Date.now() });
+const userRecords = live.records.filter(r => r.kind === 'user');
+if (userRecords.length !== 2) throw new Error(`context: expected 2 user records, got ${userRecords.length}`);
+console.log('user classification OK');
 console.log('live stats:', computeStats(live));
 // widget 行（防 theme 作用域类回归：纯函数可单测）
 const widgetParts = widgetLineParts(computeStats(live));
