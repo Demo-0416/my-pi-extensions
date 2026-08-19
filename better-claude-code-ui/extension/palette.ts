@@ -166,17 +166,17 @@ const PALETTES: Record<ThemeKey, CcPalette> = {
 	},
 	"dark-ansi": {
 		claude: 9, claudeShimmer: 11, autoAccept: 13, bashBorder: 13,
-		permission: 12, planMode: 14, promptBorder: 15, inactive: 15,
-		subtle: 15, success: 10, error: 9, warning: 11,
+		permission: 12, planMode: 14, promptBorder: 7, inactive: 7,
+		subtle: 7, success: 10, error: 9, warning: 11,
 		diffAddedBg: 2, diffRemovedBg: 1, diffAddedWord: 10, diffRemovedWord: 9,
 		userMsgBg: 8, selectionBg: 4, bashMsgBg: 0,
 	},
 	"light-ansi": {
-		claude: 9, claudeShimmer: 11, autoAccept: 13, bashBorder: 13,
-		permission: 4, planMode: 6, promptBorder: 15, inactive: 8,
+		claude: 9, claudeShimmer: 11, autoAccept: 5, bashBorder: 5,
+		permission: 4, planMode: 6, promptBorder: 7, inactive: 8,
 		subtle: 8, success: 2, error: 1, warning: 3,
 		diffAddedBg: 2, diffRemovedBg: 1, diffAddedWord: 10, diffRemovedWord: 9,
-		userMsgBg: 15, selectionBg: 6, bashMsgBg: 15,
+		userMsgBg: 7, selectionBg: 6, bashMsgBg: 15,
 	},
 };
 

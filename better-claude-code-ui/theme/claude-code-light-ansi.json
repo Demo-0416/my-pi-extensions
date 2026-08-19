@@ -4,11 +4,11 @@
   "vars": {
     "claude": 9,
     "claudeShimmer": 11,
-    "autoAccept": 13,
-    "bashBorder": 13,
+    "autoAccept": 5,
+    "bashBorder": 5,
     "permission": 4,
     "planMode": 6,
-    "promptBorder": 15,
+    "promptBorder": 7,
     "inactive": 8,
     "subtle": 8,
     "success": 2,
@@ -16,7 +16,7 @@
     "warning": 3,
     "diffAddedWord": 10,
     "diffRemovedWord": 9,
-    "userMsgBg": 15,
+    "userMsgBg": 7,
     "selectionBg": 6,
     "bashMsgBg": 15
   },
