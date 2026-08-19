@@ -19,6 +19,7 @@ import { registerGrouping } from "./tools/grouping.js";
 import { registerBuiltins } from "./tools/builtins.js";
 import { registerCommands } from "./commands.js";
 import { registerThinking } from "./thinking.js";
+import { registerPromptPointer } from "./prompt-editor.js";
 
 export default function (pi: ExtensionAPI) {
 	// Layer 2: chrome
@@ -26,6 +27,7 @@ export default function (pi: ExtensionAPI) {
 	registerTurnFooter(pi);
 	registerBanner(pi);
 	registerStatusLine(pi);
+	registerPromptPointer(pi);
 
 	// Layer 3: tool rendering
 	registerGrouping(pi);

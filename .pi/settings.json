@@ -1,6 +1,7 @@
 {
   "extensions": [
-    "./pi-trace/src/index.ts"
+    "./pi-trace/src/index.ts",
+    "./better-claude-code-ui/extension/index.ts"
   ],
   "defaultProjectTrust": "always"
 }
