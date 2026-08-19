@@ -15,13 +15,13 @@
  *     our transformer, assistant-message.js:112-119);
  *   - the transformer returns "" while collapsed — Markdown renders an empty
  *     string as ZERO rows, so collapsed thinking is truly invisible;
- *   - ctrl+t toggles a module-level expanded flag, then calls
+ *   - alt+t toggles a module-level expanded flag, then calls
  *     setHiddenThinkingLabel, whose host path runs updateContent() on every
  *     history AssistantMessageComponent + the streaming one
  *     (interactive-mode.js:1655-1666, assistant-message.js:46-50) — rebuilding
  *     each Markdown child so the transformer re-runs with the new state.
- *     Extension shortcuts pre-empt built-in keybindings, so pi's own
- *     app.thinking.toggle on the same key never fires while we're loaded.
+ *     (See the key-choice note at the registration site: ctrl+t is
+ *     host-reserved, ctrl+shift+t is taken by rpiv-todo.)
  *
  * The hidden label itself stays "" — with hideThinkingBlock=false it is never
  * rendered, and if hideThinkingBlock is ever true again (extension not loaded,
@@ -88,15 +88,16 @@ export function registerThinking(pi: ExtensionAPI): void {
 		}
 		ctx.ui.notify(`Thinking: ${thinkingExpanded ? "expanded" : "hidden"}`, "info");
 	};
-	// ctrl+t: extension shortcuts run BEFORE built-in keybindings
-	// (custom-editor.js:26 checks onExtensionShortcut first and stops on a
-	// match), so this fully takes over pi's own app.thinking.toggle — the
-	// hide-branch flip (which would render a stray blank label row) becomes
-	// unreachable while this extension is loaded. ^T is a plain C0 control
-	// byte, so no Kitty-protocol fallback key is needed (unlike ctrl+shift+o
-	// in commands.ts). ctrl+shift+t was tried first and lost a conflict to
-	// @juicesharp/rpiv-todo.
-	pi.registerShortcut("ctrl+t", {
+	// Key choice, by elimination: ctrl+t is app.thinking.toggle, which sits in
+	// the host's RESERVED_KEYBINDINGS_FOR_EXTENSION_CONFLICTS (runner.js:7-17)
+	// — extension registrations for it are rejected outright ("conflicts with
+	// built-in shortcut. Skipping"). ctrl+shift+t loses an extension-vs-
+	// extension conflict to @juicesharp/rpiv-todo (load-order dependent). alt+t
+	// is free, and ESC-prefixed alt chords decode on every terminal (same
+	// rationale as commands.ts's alt+o fallback). Note pi's own ctrl+t stays
+	// live and flips hideThinkingBlock — with our empty label that only adds a
+	// blank row; pressing it again undoes it.
+	pi.registerShortcut("alt+t", {
 		description: "Toggle thinking visibility (CC-style)",
 		handler: toggle,
 	});

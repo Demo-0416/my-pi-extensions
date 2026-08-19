@@ -5,9 +5,8 @@
  * pi 的 hide 分支(hideThinkingBlock=true)必渲染一行 Text,连空 label 也会
  * 留下一条空白行;而展开分支走 Markdown + 我们的 transformer,pi-tui Markdown
  * 对空串渲染 **0 行**。所以折叠交给 transformer:折叠态返回 ""(无痕),
- * 展开态返回 `∴ Thinking…` 标题+正文。ctrl+t 切换(扩展快捷键先于内置
- * keybinding 分发,custom-editor.js:26,故接管 pi 原生 toggle;ctrl+shift+t
- * 曾与 rpiv-todo 冲突而弃用),并借
+ * 展开态返回 `∴ Thinking…` 标题+正文。alt+t 切换(ctrl+t 在宿主保留键列表
+ * 中扩展不可注册,ctrl+shift+t 与 rpiv-todo 冲突,见 thinking.ts 键位注释),并借
  * setHiddenThinkingLabel 的宿主路径(对每个历史组件跑 updateContent 重建
  * Markdown,assistant-message.js:46-50)让 transformer 以新状态重跑。
  * 配套:用户 settings hideThinkingBlock=false。
@@ -36,12 +35,13 @@ test("非 thinking 消息不经过折叠", () => {
 	assert.equal(transform("# hi", { messageType: "assistant" }), "# hi");
 });
 
-test("ctrl+t 展开出标题+正文,再按折叠回空;宿主重建通道被触发", async () => {
+test("alt+t 展开出标题+正文,再按折叠回空;宿主重建通道被触发", async () => {
 	const { pi, transform } = setup();
 	await pi.emit("session_start", { reason: "startup" });
-	const shortcut = pi.shortcuts.get("ctrl+t") as { handler: (ctx: unknown) => Promise<void> };
-	assert.ok(shortcut, "应注册 ctrl+t(接管 pi 原生 thinking toggle)");
-	assert.ok(!pi.shortcuts.get("ctrl+shift+t"), "不再注册 ctrl+shift+t(与 rpiv-todo 冲突)");
+	const shortcut = pi.shortcuts.get("alt+t") as { handler: (ctx: unknown) => Promise<void> };
+	assert.ok(shortcut, "应注册 alt+t");
+	assert.ok(!pi.shortcuts.get("ctrl+shift+t"), "不注册 ctrl+shift+t(与 rpiv-todo 冲突)");
+	assert.ok(!pi.shortcuts.get("ctrl+t"), "不注册 ctrl+t(宿主保留键,注册会被拒)");
 
 	await shortcut.handler(pi.ctx());
 	try {
@@ -60,7 +60,7 @@ test("ctrl+t 展开出标题+正文,再按折叠回空;宿主重建通道被触�
 
 test("展开态不吞空 thinking(纯空白正文原样返回,不加孤立标题)", async () => {
 	const { pi, transform } = setup();
-	const shortcut = pi.shortcuts.get("ctrl+t") as { handler: (ctx: unknown) => Promise<void> };
+	const shortcut = pi.shortcuts.get("alt+t") as { handler: (ctx: unknown) => Promise<void> };
 	await shortcut.handler({ hasUI: false });
 	try {
 		assert.equal(transform("   ", { messageType: "assistant-thinking" }), "   ");
