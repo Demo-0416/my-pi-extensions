@@ -8,11 +8,12 @@
  *      hideThinkingBlock=false), every non-empty run of blocks gets a
  *      `∴ Thinking…` dim italic title line (CC's EXPANDED shape,
  *      AssistantThinkingMessage.tsx:62). The body keeps pi's thinkingText.
- *   2. hidden thinking label: the CC COLLAPSED line
- *      `∴ Thinking (ctrl+t to expand)` — a CONSTANT. pi's
+ *   2. hidden thinking label: EMPTY — CC leaves no collapsed-thinking line in
+ *      the transcript at all (v2.1.234 user-verified). pi's
  *      setHiddenThinkingLabel is a GLOBAL label — it rewrites every history
  *      AssistantMessageComponent in chatContainer + the streaming one
- *      (interactive-mode.js:1655-1666), so it must NOT carry per-block data.
+ *      (interactive-mode.js:1655-1666), so it must NOT carry per-block data;
+ *      "" is also the closest pi allows to CC's no-line-at-all.
  *   3. working message: while a thinking block is active the spinner row
  *      shows dim `(thinking)` — CC's SpinnerAnimationRow thinkingText.
  *
@@ -46,10 +47,14 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { dim, italic } from "./palette.js";
 
 const THINKING_TITLE = "∴ Thinking…";
-// CC AssistantThinkingMessage.tsx:44 collapsed line. CC's literal is
-// `(ctrl+o to expand)`; pi's thinking expand key is ctrl+t (keybindings.js:28),
-// so name the key that actually works in pi.
-const HIDDEN_LABEL_THINKING = "∴ Thinking (ctrl+t to expand)";
+// CC v2.1.234 (user-verified renders): collapsed thinking leaves NO line at all
+// in the transcript — its only trace is the spinner byline (`thought for Ns`)
+// and the collapsed tool-group summary (`Thought for 3s, read 1 file`). pi's
+// hide branch unconditionally renders one Text(label) row
+// (assistant-message.js:109), so an empty label is the closest reachable state:
+// the host wraps it in ANSI color, leaving a single blank row. The full body
+// stays reachable via ctrl+t (hideThinkingBlock=false → transformer above).
+const HIDDEN_LABEL_THINKING = "";
 
 export function registerThinking(pi: ExtensionAPI): void {
 	// --- 1. Expanded-shape title for every thinking block -----------------

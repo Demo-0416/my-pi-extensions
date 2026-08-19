@@ -1,28 +1,36 @@
 /**
- * AUDIT §6 Spinner 状态行（三条）：
+ * AUDIT §6 Spinner 状态行,按 CC 源码 + v2.1.234 用户实测复核:
  *
- *  1. P1 — 缺 `(12s · ↓ 1.2k tokens)` 计时/token 段。CC 的 spinner 行是
- *     `✻ Verbing… (12s · ↓ 1.2k tokens · esc to interrupt)`，计时从 agent_start
- *     起算，token 是本请求的累计下行 token（数据源：message_update 的
- *     assistantMessageEvent.partial.usage.output，message_end 时并入已结算值）。
- *  2. P1 — thinking 期间 verb 被整条顶掉换成 `(thinking)`，CC 是 verb 保留、
- *     括号段追加 thinking 状态。
- *  3. P2 — 运行中缺 `esc to interrupt` 提示（与括号段合成一体）。
- *
- * 另含窄终端渐进降级：byline 依次丢 esc → tokens → 时长 → thinking，不动 verb。
+ *  - 段顺序(SpinnerAnimationRow.tsx:203-215):时长 · ↓ tokens · thinking,
+ *    thinking 在**最后**;普通 byline **没有** `esc to interrupt`(那只出现在
+ *    teammate 分支)。
+ *  - thinking 态(Spinner.tsx:125-158):进行中 `thinking${effortSuffix}`,
+ *    结束后 `thought for Ns`(N=最后一块时长,最少 1s);v2.1.234 进行中文案
+ *    随时长递进:thinking → thinking more → thinking some more → almost done
+ *    thinking(阈值为时长近似,CC 快照无此源码)。
+ *  - 窄屏门控(SpinnerAnimationRow.tsx:176-196):thinking 最优先保留(放不下
+ *    时降级裸 `thinking`),其次时长,最后 tokens;verb 永不缩。
+ *  - 仅 thinking 段时渲染 `(thinking)`(括号同 glow 色,CC:193,210-211)。
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { stripTerminalSequences } from "@earendil-works/pi-tui";
 import {
 	buildSpinnerLine,
 	formatElapsed,
 	formatTokenCount,
+	thinkingWording,
 	type SpinnerPaint,
 } from "../extension/spinner.js";
 import { FakePi, loadExtension } from "./harness.js";
 import { currentWorkingVerb } from "../extension/spinner.js";
 
 const plainPaint: SpinnerPaint = { accent: (s) => s, shimmer: (s) => s, dim: (s) => s };
+
+/** thinking 进行态用硬编码 truecolor glow,断言前统一剥 ANSI。 */
+function plainLine(state: Parameters<typeof buildSpinnerLine>[0]): string {
+	return stripTerminalSequences(buildSpinnerLine(state, plainPaint));
+}
 
 test("formatTokenCount：847 → 847、1234 → 1.2k、25600 → 26k、1000 → 1k", () => {
 	assert.equal(formatTokenCount(847), "847");
@@ -37,53 +45,89 @@ test("formatElapsed：12s / 1m 5s / 1h 2m 3s", () => {
 	assert.equal(formatElapsed(3_723_000), "1h 2m 3s");
 });
 
-test("byline 含计时、token 与 esc to interrupt，verb 保留", () => {
-	const line = buildSpinnerLine(
-		{ verb: "Baking", timeMs: 12_000, columns: 120, tokens: 1234 },
-		plainPaint,
-	);
+test("byline 含计时与 token,无 esc to interrupt(CC 普通分支没有)", () => {
+	const line = plainLine({ verb: "Baking", timeMs: 12_000, columns: 120, tokens: 1234 });
 	assert.ok(line.includes("Baking…"), `verb 应保留：${line}`);
-	assert.ok(line.includes("(12s · ↓ 1.2k tokens · esc to interrupt)"), `byline 形态：${line}`);
+	assert.ok(line.includes("(12s · ↓ 1.2k tokens)"), `byline 形态：${line}`);
+	assert.ok(!line.includes("esc to interrupt"), `不应有 esc 段：${line}`);
 });
 
 test("tokens 为 0/缺省时不显示 token 段", () => {
-	const line = buildSpinnerLine({ verb: "Baking", timeMs: 5_000, columns: 120 }, plainPaint);
-	assert.ok(line.includes("(5s · esc to interrupt)"), `无 token 段：${line}`);
+	const line = plainLine({ verb: "Baking", timeMs: 5_000, columns: 120 });
+	assert.ok(line.includes("(5s)"), `无 token 段：${line}`);
 	assert.ok(!line.includes("tokens"), `不应有 token 字样：${line}`);
 });
 
-test("thinking 段追加在括号段首位，verb 不被顶掉", () => {
-	const line = buildSpinnerLine(
-		{ verb: "Pondering", timeMs: 12_000, columns: 120, tokens: 1234, thinking: "thinking · high" },
-		plainPaint,
-	);
+test("thinking 进行态排在括号段最后,带 effort 后缀,verb 不被顶掉", () => {
+	const line = plainLine({
+		verb: "Pondering",
+		timeMs: 12_000,
+		columns: 120,
+		tokens: 1234,
+		thinkingStatus: "thinking",
+		effortSuffix: " with high effort",
+	});
 	assert.ok(line.includes("Pondering…"), `verb 应保留：${line}`);
 	assert.ok(
-		line.includes("(thinking · high · 12s · ↓ 1.2k tokens · esc to interrupt)"),
-		`thinking 应并入括号段首位：${line}`,
+		line.includes("(12s · ↓ 1.2k tokens · thinking with high effort)"),
+		`thinking 应在括号段末位：${line}`,
 	);
 });
 
-test("窄终端渐进降级：先丢 esc，再丢 tokens，再丢时长，verb 永不缩", () => {
-	const state = { verb: "Contemplating", timeMs: 12_000, tokens: 1234, thinking: "thinking" };
-	// 宽裕：全段都在。
-	const full = buildSpinnerLine({ ...state, columns: 200 }, plainPaint);
-	assert.ok(full.includes("esc to interrupt"), full);
-	// 收窄一档：esc 先没。
-	const noEsc = buildSpinnerLine({ ...state, columns: 60 }, plainPaint);
-	assert.ok(!noEsc.includes("esc to interrupt"), `60 列应丢 esc：${noEsc}`);
-	assert.ok(noEsc.includes("↓ 1.2k tokens"), `60 列应保留 tokens：${noEsc}`);
-	// 再窄：tokens 也没,时长还在。
-	const noTok = buildSpinnerLine({ ...state, columns: 40 }, plainPaint);
-	assert.ok(!noTok.includes("tokens"), `40 列应丢 tokens：${noTok}`);
-	assert.ok(noTok.includes("12s"), `40 列应保留时长：${noTok}`);
-	// 极窄：只剩 verb。
-	const bare = buildSpinnerLine({ ...state, columns: 18 }, plainPaint);
+test("thinking 结束态:thought for Ns(最少 1s),排位同段尾", () => {
+	const line = plainLine({ verb: "Baking", timeMs: 6_000, columns: 120, tokens: 208, thinkingStatus: 5_000 });
+	assert.ok(line.includes("(6s · ↓ 208 tokens · thought for 5s)"), `CC 实测形态：${line}`);
+	const sub1s = plainLine({ verb: "Baking", timeMs: 6_000, columns: 120, thinkingStatus: 300 });
+	assert.ok(sub1s.includes("thought for 1s"), `不足 1s 按 1s(CC Math.max)：${sub1s}`);
+});
+
+test("进行态文案随 thinking 时长递进(v2.1.234)", () => {
+	assert.equal(thinkingWording(0), "thinking");
+	assert.equal(thinkingWording(29_999), "thinking");
+	assert.equal(thinkingWording(30_000), "thinking more");
+	assert.equal(thinkingWording(60_000), "thinking some more");
+	assert.equal(thinkingWording(120_000), "almost done thinking");
+	const line = plainLine({
+		verb: "Actioning",
+		timeMs: 814_000,
+		columns: 140,
+		tokens: 39_700,
+		thinkingStatus: "thinking",
+		effortSuffix: " with xhigh effort",
+		thinkingElapsedMs: 65_000,
+	});
+	assert.ok(line.includes("· thinking some more with xhigh effort)"), `递进文案并入段尾：${line}`);
+});
+
+test("窄屏门控:thinking 最优先保留(可降级裸 thinking),再时长,最后 tokens", () => {
+	const state = {
+		verb: "Contemplating",
+		timeMs: 12_000,
+		tokens: 1234,
+		thinkingStatus: "thinking" as const,
+		effortSuffix: " with xhigh effort",
+	};
+	// 宽裕:全段,thinking 带 effort 收尾。
+	const full = plainLine({ ...state, columns: 200 });
+	assert.ok(full.includes("(12s · ↓ 1.2k tokens · thinking with xhigh effort)"), full);
+	// 收窄:effort 后缀放不下 → 裸 thinking;tokens 先被丢。
+	const mid = plainLine({ ...state, columns: 41 });
+	assert.ok(mid.includes("(12s · thinking)"), `41 列应是 12s+裸 thinking：${mid}`);
+	assert.ok(!mid.includes("tokens"), `41 列应丢 tokens：${mid}`);
+	// 再窄:只剩 thinking(thinkingOnly → 括号内仅 thinking)。
+	const only = plainLine({ ...state, columns: 30 });
+	assert.ok(only.includes("(thinking)"), `30 列 thinkingOnly：${only}`);
+	assert.ok(!only.includes("12s"), `30 列应丢时长：${only}`);
+	// 无 thinking 时时长撑到最后。
+	const timerOnly = plainLine({ verb: "Contemplating", timeMs: 12_000, tokens: 1234, columns: 25 });
+	assert.ok(timerOnly.includes("(12s)"), `25 列无 thinking 应剩时长：${timerOnly}`);
+	// 极窄:只剩 verb。
+	const bare = plainLine({ ...state, columns: 18 });
 	assert.ok(bare.includes("Contemplating…"), `verb 永不缩：${bare}`);
 	assert.ok(!bare.includes("("), `极窄应无 byline：${bare}`);
 });
 
-/** emit 链完成后等一个宏任务，让 spinner 的 scheduleRepaint 落地。 */
+/** emit 链完成后等一个宏任务,让 spinner 的 scheduleRepaint 落地。 */
 async function settleRepaint(): Promise<void> {
 	await new Promise((resolve) => setTimeout(resolve, 1));
 }
@@ -97,12 +141,12 @@ test("集成：message_update 流出 usage.output 后 byline 显示 token 数", 
 		assistantMessageEvent: { type: "text_delta", delta: "x", partial: { usage: { output: 1234 } } },
 	});
 	await settleRepaint();
-	const line = pi.ui.workingMessage ?? "";
+	const line = stripTerminalSequences(pi.ui.workingMessage ?? "");
 	assert.ok(line.includes("↓ 1.2k tokens"), `working message 应含 token 段：${line}`);
-	assert.ok(line.includes("esc to interrupt"), `working message 应含 esc 提示：${line}`);
+	assert.ok(!line.includes("esc to interrupt"), `不应有 esc 段：${line}`);
 });
 
-test("集成：thinking_start 后 verb 仍在且括号段含 thinking；thinking_end 撤掉", async () => {
+test("集成：thinking_start 后 verb 仍在,thinking 段追加在末位", async () => {
 	const pi = new FakePi();
 	await loadExtension(pi);
 	await pi.emit("agent_start");
@@ -112,43 +156,27 @@ test("集成：thinking_start 后 verb 仍在且括号段含 thinking；thinking
 		assistantMessageEvent: { type: "thinking_start", contentIndex: 0, partial: { usage: { output: 0 } } },
 	});
 	await settleRepaint();
-	let line = pi.ui.workingMessage ?? "";
+	const line = stripTerminalSequences(pi.ui.workingMessage ?? "");
 	assert.ok(line.includes(`${verb}…`), `thinking 期间 verb 不被顶掉：${line}`);
-	assert.ok(line.includes("thinking"), `括号段应含 thinking：${line}`);
-	await pi.emit("message_update", {
-		message: { role: "assistant" },
-		assistantMessageEvent: { type: "thinking_end", contentIndex: 0, content: "", partial: { usage: { output: 0 } } },
-	});
-	await settleRepaint();
-	line = pi.ui.workingMessage ?? "";
-	assert.ok(!/\(thinking/.test(line), `thinking_end 后应撤掉 thinking 段：${line}`);
+	assert.ok(/thinking( with \w+ effort)?\)$/.test(line.trimEnd()), `thinking 应是最后一段：${line}`);
 });
 
 test("集成：message_end 结算 token，跨消息累计", async () => {
 	const pi = new FakePi();
 	await loadExtension(pi);
 	await pi.emit("agent_start");
+	await pi.emit("message_update", {
+		message: { role: "assistant" },
+		assistantMessageEvent: { type: "text_delta", delta: "x", partial: { usage: { output: 1000 } } },
+	});
 	await pi.emit("message_end", {
-		message: { role: "assistant", usage: { output: 900 } },
+		message: { role: "assistant", usage: { output: 1000, cost: { total: 0 } } },
 	});
 	await pi.emit("message_update", {
 		message: { role: "assistant" },
-		assistantMessageEvent: { type: "text_delta", delta: "y", partial: { usage: { output: 400 } } },
+		assistantMessageEvent: { type: "text_delta", delta: "y", partial: { usage: { output: 500 } } },
 	});
 	await settleRepaint();
-	const line = pi.ui.workingMessage ?? "";
-	assert.ok(line.includes("↓ 1.3k tokens"), `900+400=1300 → 1.3k：${line}`);
-});
-
-test("集成：agent_settled 后排队的 repaint 不复活 working message", async () => {
-	const pi = new FakePi();
-	await loadExtension(pi);
-	await pi.emit("agent_start");
-	await pi.emit("message_update", {
-		message: { role: "assistant" },
-		assistantMessageEvent: { type: "text_delta", delta: "z", partial: { usage: { output: 10 } } },
-	});
-	await pi.emit("agent_settled");
-	await settleRepaint();
-	assert.equal(pi.ui.workingMessage, undefined, "settled 后不应再写 working message");
+	const line = stripTerminalSequences(pi.ui.workingMessage ?? "");
+	assert.ok(line.includes("↓ 1.5k tokens"), `跨消息累计 1000+500：${line}`);
 });

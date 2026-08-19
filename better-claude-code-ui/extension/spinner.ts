@@ -97,6 +97,10 @@ export interface SpinnerPaint {
 	dim: (s: string) => string;
 }
 
+/** CC Spinner.tsx:125 — "thinking" while a block is open, then the finished
+ *  block's duration in ms (shown as `thought for Ns` for 2s), then null. */
+export type ThinkingStatus = "thinking" | number | null;
+
 export interface SpinnerFrameState {
 	verb: string;
 	/** Milliseconds since the request (agent loop) started. */
@@ -104,8 +108,13 @@ export interface SpinnerFrameState {
 	columns: number;
 	/** Cumulative downstream (output) tokens this request; segment hidden when 0/undefined. */
 	tokens?: number;
-	/** Active thinking descriptor ("thinking" / "thinking · high"), appended into the byline. */
-	thinking?: string;
+	/** CC thinkingStatus (Spinner.tsx:125). */
+	thinkingStatus?: ThinkingStatus;
+	/** CC getEffortSuffix (effort.ts:188): ` with high effort`, "" when unset. */
+	effortSuffix?: string;
+	/** How long the current thinking block has been open — drives the
+	 *  "almost done thinking" wording on long thinks. */
+	thinkingElapsedMs?: number;
 }
 
 /** CC-style compact token count: 847 → "847", 1234 → "1.2k", 25600 → "26k". */
@@ -158,19 +167,52 @@ export function glimmerMessage(message: string, glimmerIndex: number, paint: Spi
 	return (before ? paint.accent(before) : "") + (shim ? paint.shimmer(shim) : "") + (after ? paint.accent(after) : "");
 }
 
+// CC SpinnerAnimationRow.tsx:24-35 — the in-progress thinking segment breathes
+// between two fixed grays (theme-independent in CC as well): 3s delay, then a
+// 2s sine period. The past-tense `thought for Ns` renders plain dim.
+const THINKING_INACTIVE_GRAY = 153;
+const THINKING_SHIMMER_GRAY = 185;
+const THINKING_DELAY_MS = 3000;
+const THINKING_GLOW_PERIOD_S = 2;
+
+function thinkingGlowPaint(timeMs: number): (s: string) => string {
+	const opacity =
+		timeMs < THINKING_DELAY_MS
+			? 0
+			: (Math.sin((((timeMs - THINKING_DELAY_MS) / 1000) * (Math.PI * 2)) / THINKING_GLOW_PERIOD_S) + 1) / 2;
+	const v = Math.round(THINKING_INACTIVE_GRAY + (THINKING_SHIMMER_GRAY - THINKING_INACTIVE_GRAY) * opacity);
+	return (s) => `\x1b[38;2;${v};${v};${v}m${s}\x1b[39m`;
+}
+
 /**
- * Build one spinner line: `<glyph> <verb…> (thinking · 12s · ↓ 1.2k tokens ·
- * esc to interrupt)`. Pure — takes the animation clock and color functions,
+ * In-progress thinking wording. CC v2.1.234 escalates the copy as one thinking
+ * block keeps running: `thinking` → `thinking more` → `thinking some more` →
+ * `almost done thinking` (user-observed; the local CC snapshot predates this,
+ * so the thresholds are a best-guess time ladder — CC likely keys off the
+ * thinking-token budget, which pi does not expose).
+ */
+export function thinkingWording(blockElapsedMs: number): string {
+	if (blockElapsedMs >= 120_000) return "almost done thinking";
+	if (blockElapsedMs >= 60_000) return "thinking some more";
+	if (blockElapsedMs >= 30_000) return "thinking more";
+	return "thinking";
+}
+
+/**
+ * Build one spinner line: `<glyph> <verb…> (12s · ↓ 1.2k tokens · thinking
+ * with high effort)`. Pure — takes the animation clock and color functions,
  * returns an ANSI string. Mirrors SpinnerAnimationRow's derivations for a
  * single (non-teammate) agent. Glyph and verb are painted in the accent
  * (claude brand) color every tick — no gray verb (AUDIT §6), no baked-in frame
  * color (AUDIT §5 spinner.ts:74) — with a glimmer sweep across the verb
- * (AUDIT §6, CC's most recognizable spinner effect). The dim byline carries
- * the thinking state (appended after the verb, never replacing it — AUDIT §6
- * thinking P1), the elapsed clock, the downstream token count, and the
- * `esc to interrupt` hint (AUDIT §6 spinner P1/P2). On narrow terminals the
- * byline sheds segments (esc → tokens → clock → thinking) before ever
- * touching the verb — CC's progressive width degradation.
+ * (AUDIT §6, CC's most recognizable spinner effect).
+ *
+ * Byline parts in CC's order (SpinnerAnimationRow.tsx:203-215): elapsed clock,
+ * downstream tokens, thinking status LAST. No `esc to interrupt` — CC's byline
+ * only carries that in the teammate branch. Width gating follows CC:176-196:
+ * thinking survives narrowing first (falling back to the bare word `thinking`),
+ * then the timer, then tokens; the verb is never touched. A thinking-only
+ * byline renders `(thinking)` in the glow color (CC:193,210-211).
  */
 export function buildSpinnerLine(state: SpinnerFrameState, paint: SpinnerPaint): string {
 	const message = `${state.verb}…`;
@@ -186,26 +228,48 @@ export function buildSpinnerLine(state: SpinnerFrameState, paint: SpinnerPaint):
 	const glimmerIndex = messageWidth + 10 - (cyclePosition % cycleLength);
 	const verbSpan = glimmerMessage(message, glimmerIndex, paint);
 
-	// Byline segments, in fixed order; dropped back-to-front when too wide.
-	const segments = [
-		...(state.thinking ? [state.thinking] : []),
-		formatElapsed(state.timeMs),
-		...(state.tokens && state.tokens > 0 ? [`↓ ${formatTokenCount(state.tokens)} tokens`] : []),
-		"esc to interrupt",
-	];
-	// Shed the least informative segments first: esc hint, then tokens, then
-	// the clock, then thinking. `2 + messageWidth` = glyph + space + verb.
-	const drop = ["esc to interrupt", /^↓ /, /^\d/];
-	let kept = segments;
-	const fits = (parts: string[]): boolean =>
-		parts.length === 0 || 2 + messageWidth + 1 + 2 + plainWidth(parts.join(" · ")) <= state.columns;
-	for (const target of drop) {
-		if (fits(kept)) break;
-		kept = kept.filter((seg) => (typeof target === "string" ? seg !== target : !target.test(seg)));
-	}
-	if (!fits(kept)) kept = [];
+	// --- Byline (CC SpinnerAnimationRow.tsx:163-215) -----------------------
+	const status = state.thinkingStatus ?? null;
+	const effortSuffix = state.effortSuffix ?? "";
+	let thinkingText =
+		status === "thinking"
+			? `${thinkingWording(state.thinkingElapsedMs ?? 0)}${effortSuffix}`
+			: typeof status === "number"
+				? `thought for ${Math.max(1, Math.round(status / 1000))}s`
+				: null;
 
-	const byline = kept.length > 0 ? ` ${paint.dim(`(${kept.join(" · ")})`)}` : "";
+	const timerText = formatElapsed(state.timeMs);
+	const tokensText = state.tokens && state.tokens > 0 ? `↓ ${formatTokenCount(state.tokens)} tokens` : null;
+
+	// Progressive width gating (CC:176-196). `2 + messageWidth` = glyph+space+verb;
+	// CC reserves 5 more for parens/margin. SEP is " · ".
+	const SEP = 3;
+	const availableSpace = state.columns - (2 + messageWidth) - 5;
+	let thinkingWidth = thinkingText ? plainWidth(thinkingText) : 0;
+	let showThinking = thinkingText !== null && availableSpace > thinkingWidth;
+	if (!showThinking && status === "thinking" && effortSuffix && availableSpace > plainWidth("thinking")) {
+		thinkingText = "thinking";
+		thinkingWidth = plainWidth(thinkingText);
+		showThinking = true;
+	}
+	const usedAfterThinking = showThinking ? thinkingWidth + SEP : 0;
+	const showTimer = availableSpace > usedAfterThinking + plainWidth(timerText);
+	const usedAfterTimer = usedAfterThinking + (showTimer ? plainWidth(timerText) + SEP : 0);
+	const showTokens = tokensText !== null && availableSpace > usedAfterTimer + plainWidth(tokensText);
+
+	const thinkingPaint = status === "thinking" ? thinkingGlowPaint(state.timeMs) : paint.dim;
+	const parts: string[] = [];
+	if (showTimer) parts.push(paint.dim(timerText));
+	if (showTokens && tokensText) parts.push(paint.dim(tokensText));
+	if (showThinking && thinkingText) parts.push(thinkingPaint(thinkingText));
+
+	let byline = "";
+	if (parts.length > 0) {
+		byline =
+			showThinking && status === "thinking" && !showTimer && !showTokens
+				? ` ${thinkingPaint(`(${thinkingText})`)}`
+				: ` ${paint.dim("(")}${parts.join(paint.dim(" · "))}${paint.dim(")")}`;
+	}
 	return `${glyph} ${verbSpan}${byline}`;
 }
 
@@ -213,10 +277,11 @@ export function buildSpinnerLine(state: SpinnerFrameState, paint: SpinnerPaint):
 // Registration + the 50ms repaint loop
 // ---------------------------------------------------------------------------
 
-/** Byline wording for the active thinking level (matches thinking.ts's text). */
-function thinkingSegment(level: string | undefined): string {
-	if (!level || level === "none" || level === "off") return "thinking";
-	return `thinking · ${level}`;
+/** CC getEffortSuffix (effort.ts:188-196): ` with ${level} effort`, "" when no
+ *  effort applies. pi always has a thinking level; off/none map to "". */
+function effortSuffixFor(level: string | undefined): string {
+	if (!level || level === "none" || level === "off") return "";
+	return ` with ${level} effort`;
 }
 
 export function registerSpinner(pi: ExtensionAPI): void {
@@ -225,9 +290,56 @@ export function registerSpinner(pi: ExtensionAPI): void {
 	// Downstream token tally for the request: settled messages + streaming one.
 	let settledTokens = 0;
 	let streamTokens = 0;
-	// Active thinking byline segment (undefined when no block is open).
-	let thinking: string | undefined;
+	// CC Spinner.tsx:125-158 — thinking status state machine. Each state shows
+	// for a minimum of 2s to avoid jank: an open block reports "thinking"; on
+	// close, once the 2s minimum has passed, the block's duration shows as
+	// `thought for Ns` for 2s and then clears.
+	let thinkingStatus: ThinkingStatus = null;
+	let thinkingStartMs: number | null = null;
+	let effortSuffix = "";
+	let thinkingShowTimer: ReturnType<typeof setTimeout> | null = null;
+	let thinkingClearTimer: ReturnType<typeof setTimeout> | null = null;
 	let repaintScheduled = false;
+
+	function clearThinkingTimers(): void {
+		if (thinkingShowTimer) {
+			clearTimeout(thinkingShowTimer);
+			thinkingShowTimer = null;
+		}
+		if (thinkingClearTimer) {
+			clearTimeout(thinkingClearTimer);
+			thinkingClearTimer = null;
+		}
+	}
+
+	function beginThinking(): void {
+		if (thinkingStartMs !== null) return;
+		clearThinkingTimers();
+		thinkingStartMs = Date.now();
+		thinkingStatus = "thinking";
+	}
+
+	function settleThinking(): void {
+		if (thinkingStartMs === null) return;
+		const duration = Date.now() - thinkingStartMs;
+		thinkingStartMs = null;
+		const showDuration = (): void => {
+			thinkingShowTimer = null;
+			thinkingStatus = duration;
+			thinkingClearTimer = setTimeout(() => {
+				thinkingClearTimer = null;
+				thinkingStatus = null;
+			}, 2000);
+			thinkingClearTimer.unref?.();
+		};
+		const remaining = Math.max(0, 2000 - duration);
+		if (remaining > 0) {
+			thinkingShowTimer = setTimeout(showDuration, remaining);
+			thinkingShowTimer.unref?.();
+		} else {
+			showDuration();
+		}
+	}
 
 	function paintFor(theme: Theme): SpinnerPaint {
 		return {
@@ -248,7 +360,9 @@ export function registerSpinner(pi: ExtensionAPI): void {
 				timeMs: Date.now() - animStartMs,
 				columns: process.stdout.columns ?? 80,
 				tokens: settledTokens + streamTokens,
-				thinking,
+				thinkingStatus,
+				effortSuffix,
+				thinkingElapsedMs: thinkingStartMs !== null ? Date.now() - thinkingStartMs : 0,
 			},
 			paintFor(ctx.ui.theme),
 		);
@@ -298,7 +412,10 @@ export function registerSpinner(pi: ExtensionAPI): void {
 		animStartMs = Date.now();
 		settledTokens = 0;
 		streamTokens = 0;
-		thinking = undefined;
+		clearThinkingTimers();
+		thinkingStatus = null;
+		thinkingStartMs = null;
+		effortSuffix = "";
 		if (!ctx.hasUI) return;
 		stopLoop();
 		timer = setInterval(() => repaint(ctx), TICK_MS);
@@ -322,10 +439,11 @@ export function registerSpinner(pi: ExtensionAPI): void {
 			changed = true;
 		}
 		if (kind === "thinking_start") {
-			thinking = thinkingSegment(ctx.thinkingLevel);
+			effortSuffix = effortSuffixFor(ctx.thinkingLevel);
+			beginThinking();
 			changed = true;
 		} else if (kind === "thinking_end") {
-			thinking = undefined;
+			settleThinking();
 			changed = true;
 		}
 		if (changed && ctx.hasUI) scheduleRepaint(ctx);
@@ -337,13 +455,15 @@ export function registerSpinner(pi: ExtensionAPI): void {
 		const out = (event.message as { usage?: { output?: number } }).usage?.output;
 		settledTokens += typeof out === "number" ? out : streamTokens;
 		streamTokens = 0;
-		// Abort path: a dying stream may never emit thinking_end.
-		thinking = undefined;
+		// Abort path: a dying stream may never emit thinking_end — settle the
+		// open block here (no-op when thinking_end already ran).
+		settleThinking();
 		if (ctx.hasUI) scheduleRepaint(ctx);
 	});
 
 	pi.on("agent_settled", async (_event, ctx) => {
 		stopLoop();
+		clearThinkingTimers();
 		if (ctx.hasUI) ctx.ui.setWorkingMessage();
 	});
 }

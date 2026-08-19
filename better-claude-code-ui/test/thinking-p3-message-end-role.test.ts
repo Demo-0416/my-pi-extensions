@@ -48,13 +48,26 @@ test("toolResult 消息的 message_end 不改动 spinner", async () => {
 	assert.match(pi.ui.workingMessage ?? "", /thinking/i, `toolResult message_end 不应清掉 thinking 态，实际: ${pi.ui.workingMessage}`);
 });
 
-test("只有 assistant 消息的 message_end 才结算思考态", async () => {
+/** 轮询等待 spinner 的 50ms repaint 呈现出期望态。 */
+async function waitFor(cond: () => boolean, ms: number): Promise<boolean> {
+	const deadline = Date.now() + ms;
+	while (Date.now() < deadline) {
+		if (cond()) return true;
+		await new Promise((r) => setTimeout(r, 60));
+	}
+	return cond();
+}
+
+test("只有 assistant 消息的 message_end 才结算思考态(CC 2s 最短显示 → thought for → 清空)", async () => {
 	const pi = await openThinking();
 	assert.match(pi.ui.workingMessage ?? "", /thinking/i, "前提：spinner 处于 thinking");
 
 	await pi.emit("message_end", { message: { role: "assistant", content: [] } });
-	await tick();
-	assert.doesNotMatch(pi.ui.workingMessage ?? "", /thinking/i, `assistant message_end 应结算 thinking 段，实际: ${pi.ui.workingMessage}`);
+	// CC Spinner.tsx:136-155:进行态最少显示 2s,随后 `thought for Ns` 显示 2s,再清空。
+	const sawThought = await waitFor(() => /thought for \d+s/.test(pi.ui.workingMessage ?? ""), 3500);
+	assert.ok(sawThought, `assistant message_end 后应转为过去时 thought for,实际: ${pi.ui.workingMessage}`);
+	const cleared = await waitFor(() => !/thinking|thought/i.test(pi.ui.workingMessage ?? ""), 3500);
+	assert.ok(cleared, `thought for 显示 2s 后应清空,实际: ${pi.ui.workingMessage}`);
 });
 
 test("缺 message.role 的 message_end 不误伤（当作非 assistant 忽略）", async () => {

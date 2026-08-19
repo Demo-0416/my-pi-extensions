@@ -28,7 +28,8 @@ test("thinking_end 后隐藏标签保持常量，绝不写 per-block 时长", as
 	const pi = thinkingPi();
 	await pi.emit("session_start", { reason: "startup" });
 	const resting = pi.ui.hiddenThinkingLabel;
-	assert.ok(resting, "session_start 应设定常量折叠标签");
+	// 常量如今是空串(CC 折叠 thinking 无独立行),但必须是"已显式设置"。
+	assert.notEqual(resting, undefined, "session_start 应设定常量折叠标签");
 	assert.doesNotMatch(resting ?? "", DURATION_RE, "初始标签不应含时长");
 
 	await pi.emit("turn_start");
