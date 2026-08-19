@@ -13,7 +13,7 @@
   },
   "pi": {
     "extensions": ["./src/index.ts"],
-    "image": "https://raw.githubusercontent.com/Demo-0416/pi-trace/main/docs/screenshot.png"
+    "image": "https://raw.githubusercontent.com/Demo-0416/my-pi-extensions/master/pi-trace/docs/screenshot.png"
   },
   "files": [
     "src/index.ts",
