@@ -1,7 +1,7 @@
 /**
- * CC turn footer: `✻ Worked for 45s`, dim, printed only for turns that ran
- * longer than 30s. Persisted via appendEntry + registerEntryRenderer so it
- * survives reload/resume.
+ * CC turn footer: `✻ Worked for 45s`, dim, printed after every request that
+ * took ≥1s (CC v2.1.234 shows it for 4s/11s turns too). Persisted via
+ * appendEntry + registerEntryRenderer so it survives reload/resume.
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
@@ -11,8 +11,11 @@ const TURN_COMPLETION_VERBS = [
 	"Baked", "Brewed", "Churned", "Cogitated", "Cooked", "Crunched", "Sautéed", "Worked",
 ] as const;
 
-// dsh-tui transcript.ts: TURN_FOOTER_MIN_MS — CC's REPL.tsx threshold (30s).
-const TURN_FOOTER_MIN_MS = 30_000;
+// CC v2.1.234 (user-verified renders): the footer prints for EVERY request —
+// `✻ Sautéed for 4s`, `✻ Cooked for 11s`. The old snapshot's 30s REPL.tsx
+// threshold no longer applies; only sub-second turns are skipped (a "0s"
+// footer is noise CC never shows).
+const TURN_FOOTER_MIN_MS = 1_000;
 
 // dsh-tui transcript.ts: formatTurnDuration — `45s`, `1m 23s`, `2h 5m 1s`.
 export function formatTurnDuration(ms: number): string {
@@ -68,7 +71,7 @@ export function registerTurnFooter(pi: ExtensionAPI): void {
 		if (!requestStartMs) return;
 		const duration = Date.now() - requestStartMs;
 		requestStartMs = 0;
-		if (duration <= TURN_FOOTER_MIN_MS) return;
+		if (duration < TURN_FOOTER_MIN_MS) return;
 		// CC picks a fresh random past-tense verb when it creates the completion
 		// message (createTurnDurationMessage); sample here at settle time.
 		pi.appendEntry<TurnFooterData>("cc-turn-footer", { ms: duration, verb: sampleTurnVerb() });

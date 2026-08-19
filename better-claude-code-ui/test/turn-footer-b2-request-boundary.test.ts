@@ -39,20 +39,29 @@ test("一次 >30s 的多轮请求只追加一条 turn footer（不再每 turn �
 	assert.ok(data.ms >= 45_000, `时长应覆盖整个请求(≥45s)，实际 ${data.ms}ms`);
 });
 
-test("一次 <30s 的请求不追加 footer", async (t) => {
+test("短请求也追加 footer(CC v2.1.234 实测 4s/11s 都显示),但 <1s 不追加", async (t) => {
 	t.mock.timers.enable({ apis: ["Date"], now: 1_700_000_000_000 });
 	const pi = new FakePi();
 	await loadExtension(pi);
+	const count = () => pi.appendedEntries.filter((e) => e.customType === "cc-turn-footer").length;
 
-	const before = pi.appendedEntries.filter((e) => e.customType === "cc-turn-footer").length;
+	// 10s 请求:旧 30s 阈值来自过期 CC 快照;v2.1.234 每次请求都打 footer。
+	const before = count();
 	await pi.emit("agent_start");
 	await pi.emit("turn_start", { turnIndex: 0, timestamp: Date.now() });
 	t.mock.timers.tick(10_000);
 	await pi.emit("turn_end", { turnIndex: 0, message: { role: "assistant" }, toolResults: [] });
 	await pi.emit("agent_settled");
+	assert.equal(count() - before, 1, "10s 的请求也应追加 footer");
 
-	const after = pi.appendedEntries.filter((e) => e.customType === "cc-turn-footer").length;
-	assert.equal(after - before, 0, "10s 的请求不应追加 footer");
+	// <1s 请求:CC 从不显示 "0s" footer。
+	const mid = count();
+	await pi.emit("agent_start");
+	await pi.emit("turn_start", { turnIndex: 0, timestamp: Date.now() });
+	t.mock.timers.tick(500);
+	await pi.emit("turn_end", { turnIndex: 0, message: { role: "assistant" }, toolResults: [] });
+	await pi.emit("agent_settled");
+	assert.equal(count() - mid, 0, "亚秒请求不应追加 footer");
 });
 
 test("连续两次请求各自结算，互不串时长", async (t) => {
