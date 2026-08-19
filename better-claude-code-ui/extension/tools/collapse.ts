@@ -371,7 +371,11 @@ export function collapsedSummary(
 ): string {
 	const n = (count: number): string => (styleCount ? styleCount(count) : String(count));
 	const parts: string[] = [];
-	const phase = group.running ? "active" : "settled";
+	// CC v2.1.234 — tense follows the group's ACTIVE window (present until the
+	// whole generation run settles, through thinking pauses between batches),
+	// not just whether a member is mid-flight (`running`). AUDIT §6 P2 "工具一
+	// 跑完就变过去时,CC 会一直保持进行时到整轮生成结束".
+	const phase = group.active ? "active" : "settled";
 	const fragment = (kind: "search" | "read" | "list", count: number): void => {
 		const text =
 			kind === "search"

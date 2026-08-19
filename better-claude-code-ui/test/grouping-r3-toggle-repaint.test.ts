@@ -70,13 +70,25 @@ test("/cc-tools group 切换会触发 repaint（经命令 handler 全链路）",
 
 	const cmd = pi.commands.get("cc-tools");
 	assert.ok(cmd, "cc-tools 命令已注册");
-	calls.length = 0;
-	// off → on 各一次；每次切换都应推动重绘。
-	await cmd.handler("group off", { hasUI: false });
-	assert.ok(calls.includes("g1"), `group off 后 g1 应被重绘，实际: ${JSON.stringify(calls)}`);
-	calls.length = 0;
-	await cmd.handler("group on", { hasUI: false });
-	assert.ok(calls.includes("g1"), `group on 后 g1 应被重绘，实际: ${JSON.stringify(calls)}`);
+	// writeSettingsKey 写 homedir()/.pi/settings.json；POSIX 的 os.homedir()
+	// 优先 $HOME——重定向到临时目录，别污染真实用户设置。
+	const { mkdtempSync } = await import("node:fs");
+	const { tmpdir } = await import("node:os");
+	const { join } = await import("node:path");
+	const fakeHome = mkdtempSync(join(tmpdir(), "cc-r3-home-"));
+	const origHome = process.env.HOME;
+	process.env.HOME = fakeHome;
+	try {
+		calls.length = 0;
+		// off → on 各一次；每次切换都应推动重绘。
+		await cmd.handler("group off", { hasUI: false });
+		assert.ok(calls.includes("g1"), `group off 后 g1 应被重绘，实际: ${JSON.stringify(calls)}`);
+		calls.length = 0;
+		await cmd.handler("group on", { hasUI: false });
+		assert.ok(calls.includes("g1"), `group on 后 g1 应被重绘，实际: ${JSON.stringify(calls)}`);
+	} finally {
+		process.env.HOME = origHome;
+	}
 });
 
 test("展开 glance 行：grep 叫 Search（与独立行一致），pending 点走 dim", async () => {
@@ -113,10 +125,21 @@ test("alt+o 注册为 extra-detail 的非 Kitty 降级键，与 ctrl+shift+o 同
 	assert.ok(pi.shortcuts.has("ctrl+shift+o"), "ctrl+shift+o 已注册");
 	assert.ok(pi.shortcuts.has("alt+o"), "alt+o 降级键已注册");
 
-	const commands = await import("../extension/commands.js");
-	const before = commands.isExtraDetail();
-	await pi.shortcuts.get("alt+o").handler({ hasUI: false });
-	assert.equal(commands.isExtraDetail(), !before, "alt+o 应翻转 extra-detail 开关");
-	await pi.shortcuts.get("ctrl+shift+o").handler({ hasUI: false });
-	assert.equal(commands.isExtraDetail(), before, "ctrl+shift+o 应再翻转回来（同一开关）");
+	// setDetail 持久化到 homedir()/.pi/settings.json——重定向 HOME 免污染。
+	const { mkdtempSync } = await import("node:fs");
+	const { tmpdir } = await import("node:os");
+	const { join } = await import("node:path");
+	const fakeHome = mkdtempSync(join(tmpdir(), "cc-r3-home-"));
+	const origHome = process.env.HOME;
+	process.env.HOME = fakeHome;
+	try {
+		const commands = await import("../extension/commands.js");
+		const before = commands.isExtraDetail();
+		await pi.shortcuts.get("alt+o").handler({ hasUI: false });
+		assert.equal(commands.isExtraDetail(), !before, "alt+o 应翻转 extra-detail 开关");
+		await pi.shortcuts.get("ctrl+shift+o").handler({ hasUI: false });
+		assert.equal(commands.isExtraDetail(), before, "ctrl+shift+o 应再翻转回来（同一开关）");
+	} finally {
+		process.env.HOME = origHome;
+	}
 });

@@ -102,6 +102,10 @@ test("两段各 >0.5s 的 thinking 累加后越过 1s 阈值，显示 thought fo
 	await pi.emit("tool_execution_end", { toolCallId: "t1", toolName: "read", result: { content: [{ type: "text", text: "x" }] }, isError: false });
 	await pi.emit("tool_execution_end", { toolCallId: "t2", toolName: "read", result: { content: [{ type: "text", text: "y" }] }, isError: false });
 
+	// CC v2.1.234:组保持现在时到整轮生成结束;断言过去时前先结束 agent 循环。
+	await pi.emit("agent_end");
+	await new Promise((r) => setTimeout(r, 0));
+
 	const read = pi.tools.get("read")!;
 	const theme = new FakeTheme();
 	const { ctx } = makeToolCtx({ toolCallId: "t1", args: { path: "a.txt" }, isPartial: false });

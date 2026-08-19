@@ -28,6 +28,14 @@ async function beginTurn(pi: FakePi): Promise<void> {
 	await pi.emit("turn_start", { turnIndex: 0, timestamp: Date.now() });
 }
 
+/** 结束 agent 循环让组落定(CC v2.1.234:组保持现在时到整轮生成结束,
+ *  本文件断言的是过去时归类文案,所以先 settle)。agent_end 的结算在
+ *  microtask 里,等一拍。 */
+async function settleRun(pi: FakePi): Promise<void> {
+	await pi.emit("agent_end");
+	await new Promise((r) => setTimeout(r, 0));
+}
+
 /** 用组 leader（第一个工具）的 renderCall 拿折叠摘要行纯文本。 */
 function summaryOf(pi: FakePi, toolName: string, leaderId: string, args: Record<string, unknown>): string {
 	const tool = pi.tools.get(toolName)!;
@@ -48,6 +56,7 @@ test("只读 bash 归入 read（不再是 'ran N bash commands'）", async () =>
 	await pi.emit("tool_execution_end", { toolCallId: "b1", toolName: "bash", result: { content: [{ type: "text", text: "x" }] }, isError: false });
 	await pi.emit("tool_execution_end", { toolCallId: "b2", toolName: "bash", result: { content: [{ type: "text", text: "y" }] }, isError: false });
 
+	await settleRun(pi);
 	const text = summaryOf(pi, "bash", "b1", { command: "cat a.txt" });
 	assert.match(text, /Read 2 files/i, `只读 bash 应归入 read，实际: ${text}`);
 	assert.doesNotMatch(text, /bash command/i, `不应出现 "bash commands"，实际: ${text}`);
@@ -64,6 +73,7 @@ test("只读 bash：ls 归入 list、grep 归入 search（各自 disjoint 计数
 	await pi.emit("tool_execution_end", { toolCallId: "l1", toolName: "bash", result: { content: [{ type: "text", text: "a" }] }, isError: false });
 	await pi.emit("tool_execution_end", { toolCallId: "g1", toolName: "bash", result: { content: [{ type: "text", text: "b" }] }, isError: false });
 
+	await settleRun(pi);
 	const text = summaryOf(pi, "bash", "l1", { command: "ls src" });
 	assert.match(text, /Searched for 1 pattern/i, `bash grep 应归入 search，实际: ${text}`);
 	assert.match(text, /listed 1 directory/i, `bash ls 应归入 list，实际: ${text}`);
@@ -80,6 +90,7 @@ test("阈值 ≥1：单个只读工具也折叠成摘要行", async () => {
 	await pi.emit("tool_execution_start", { toolCallId: "r1", toolName: "read", args: { path: "only.txt" } });
 	await pi.emit("tool_execution_end", { toolCallId: "r1", toolName: "read", result: { content: [{ type: "text", text: "hello" }] }, isError: false });
 
+	await settleRun(pi);
 	const text = summaryOf(pi, "read", "r1", { path: "only.txt" });
 	assert.match(text, /Read 1 file/i, `单个 read 应折叠成 "Read 1 file"，实际: ${text}`);
 	assert.match(text, /ctrl\+o to expand/i, `折叠摘要行应带展开提示，实际: ${text}`);
@@ -93,6 +104,7 @@ test("单个只读 bash 也折叠（阈值 ≥1 + bash 归类共同作用）", a
 	await pi.emit("tool_execution_start", { toolCallId: "c1", toolName: "bash", args: { command: "cat solo.txt" } });
 	await pi.emit("tool_execution_end", { toolCallId: "c1", toolName: "bash", result: { content: [{ type: "text", text: "z" }] }, isError: false });
 
+	await settleRun(pi);
 	const text = summaryOf(pi, "bash", "c1", { command: "cat solo.txt" });
 	assert.match(text, /Read 1 file/i, `单个只读 bash 应折叠成 "Read 1 file"，实际: ${text}`);
 	assert.doesNotMatch(text, /bash command/i, `不应出现 "bash commands"，实际: ${text}`);

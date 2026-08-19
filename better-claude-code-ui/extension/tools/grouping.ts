@@ -58,6 +58,14 @@ export interface GroupInfo {
 	 *  later `/cc-tools group off` can push hidden PAST-turn members to redraw
 	 *  as standalone rows (AUDIT §5:372 — toggling off left them blank forever). */
 	memberInvalidators?: Map<string, () => void>;
+	/** CC v2.1.234: after a thinking segment completes mid-group, the ⎿ hint
+	 *  shows the thinking TEXT (non-streaming) until a newer tool hint arrives.
+	 *  Timestamped so latestHint() can arbitrate against member hints. */
+	thinkingHint?: { value: string; at: number };
+	/** Assistant body text started after this group's tools — CC's
+	 *  hasContentAfter: the group settles (past tense) even though the
+	 *  generation is still running. */
+	contentAfter?: boolean;
 }
 
 /**
@@ -109,6 +117,9 @@ const MAX_ARCHIVED_GROUPS = 500;
 let nextGroupId = 1;
 let pendingThinkingMs = 0;
 let thinkingOpenSince: number | undefined;
+// The most recent completed thinking segment's text (whitespace-collapsed),
+// waiting to be attached to a group as its ⎿ thinking hint (CC v2.1.234).
+let pendingThinkingText: { value: string; at: number } | undefined;
 let blinkTimer: ReturnType<typeof setInterval> | null = null;
 let blinkPhase = true;
 // AUDIT §5:199 — ids in this tick's blink budget. Out-of-budget rows are not
@@ -166,6 +177,7 @@ function reset(): void {
 	blinkBudgetStandalone = new Set();
 	pendingThinkingMs = 0;
 	thinkingOpenSince = undefined;
+	pendingThinkingText = undefined;
 	agentDepth = 0;
 	stopBlink();
 }
@@ -356,6 +368,13 @@ function rebuildGroups(): void {
 				g.thinkingMs = pendingThinkingMs;
 				pendingThinkingMs = 0;
 			}
+			// The thinking segment that preceded this group travels with it as the
+			// ⎿ thinking-text hint (CC v2.1.234); latestHint() lets any newer tool
+			// hint win by timestamp.
+			if (pendingThinkingText !== undefined) {
+				g.thinkingHint = pendingThinkingText;
+				pendingThinkingText = undefined;
+			}
 			newGroups.push(g);
 		}
 		run = [];
@@ -380,6 +399,8 @@ function rebuildGroups(): void {
 			ng.invalidator = old.invalidator;
 			ng.hintState = old.hintState;
 			ng.thinkingMs += old.thinkingMs;
+			ng.thinkingHint = ng.thinkingHint ?? old.thinkingHint;
+			ng.contentAfter = old.contentAfter;
 		}
 	}
 	groups = newGroups;
@@ -430,6 +451,7 @@ function archiveCurrentGroups(): void {
 		g.active = false;
 		g.invalidator = undefined;
 		g.memberInvalidators = invalidators;
+		g.thinkingHint = undefined; // hint only ever shows while active
 		clearHintTimer(g.hintState);
 		archivedGroups.push(g);
 	}
@@ -550,6 +572,7 @@ export function registerGrouping(pi: ExtensionAPI): void {
 		toolInvalidators.clear();
 		pendingThinkingMs = 0;
 		thinkingOpenSince = undefined;
+		pendingThinkingText = undefined;
 		markBlinkActivity();
 	});
 
@@ -588,6 +611,39 @@ export function registerGrouping(pi: ExtensionAPI): void {
 	// Track thinking spans for the collapsed summary's "Thought for Xs".
 	pi.on("message_update", async (event) => {
 		markBlinkActivity();
+		// CC v2.1.234 — a COMPLETED thinking segment's text becomes the active
+		// group's ⎿ hint (non-streaming: it appears once the segment ends). The
+		// thinking_end stream event carries the full segment text.
+		const ame = (event as { assistantMessageEvent?: { type?: string; content?: string } }).assistantMessageEvent;
+		if (ame?.type === "thinking_end" && typeof ame.content === "string") {
+			const flat = ame.content.replace(/\s+/g, " ").trim();
+			if (flat.length > 0) {
+				const hint = { value: flat, at: Date.now() };
+				const g = groups[groups.length - 1];
+				if (g && g.active) {
+					g.thinkingHint = hint;
+					invalidateGroups();
+				} else {
+					// No active group yet — travels with the next group built
+					// (rebuildGroups flush), like pendingThinkingMs.
+					pendingThinkingText = hint;
+				}
+			}
+		}
+		// CC MessageRow.tsx hasContentAfter — assistant BODY text after a group's
+		// tools settles the group (past tense) even mid-generation. Thinking does
+		// NOT settle it ("Thinking for Xs, searching…" keeps present tense).
+		if (ame?.type === "text_start") {
+			const g = groups[groups.length - 1];
+			if (g && !g.running && g.active) {
+				g.contentAfter = true;
+				g.active = false;
+				clearHintTimer(g.hintState);
+				invalidateGroups();
+			} else if (g) {
+				g.contentAfter = true;
+			}
+		}
 		const content = (event as { message?: { content?: unknown } })?.message?.content;
 		if (!Array.isArray(content) || content.length === 0) return;
 		// AUDIT §5:449 — decide open/close by the LAST (currently-streaming) block,
@@ -667,9 +723,14 @@ export function registerGrouping(pi: ExtensionAPI): void {
 			g.running = g.members.some((m) => m.status === "pending");
 			g.failed = g.members.some((m) => m.isError);
 			// CC isActiveGroup = hasAnyToolInProgress || (isLoading && !hasContentAfter)
-			// (MessageRow.tsx:118) — no thinking term. A group is active iff a member
-			// is still running.
-			g.active = g.running;
+			// (MessageRow.tsx:118). The second term keeps the LATEST group in present
+			// tense between tool batches — through thinking pauses — until the run
+			// ends (agent_end → settleLeakedGroups), body text lands after it
+			// (text_start above), or the next turn archives it. CC v2.1.234 shows
+			// "Thinking for Xs, searching…" exactly in that window.
+			g.active =
+				g.running ||
+				(agentDepth > 0 && groups[groups.length - 1] === g && !g.contentAfter);
 			g.lastActiveAt = Date.now();
 		}
 		markBlinkActivity();
@@ -757,15 +818,31 @@ function statusDot(status: ToolStatus, theme: Theme): string {
  * all-ls group), which blanks the line — matching CC's `incomingHint===undefined`.
  */
 function latestHint(g: GroupInfo): CollapseHint | undefined {
+	let member: ToolRecord | undefined;
 	for (let i = g.members.length - 1; i >= 0; i--) {
 		const m = g.members[i]!;
-		if (m.status === "pending" && m.classification?.hint) return m.classification.hint;
+		if (m.status === "pending" && m.classification?.hint) {
+			member = m;
+			break;
+		}
 	}
-	for (let i = g.members.length - 1; i >= 0; i--) {
-		const m = g.members[i]!;
-		if (m.classification?.hint) return m.classification.hint;
+	if (!member) {
+		for (let i = g.members.length - 1; i >= 0; i--) {
+			const m = g.members[i]!;
+			if (m.classification?.hint) {
+				member = m;
+				break;
+			}
+		}
 	}
-	return undefined;
+	// CC v2.1.234 — a thinking segment completed AFTER the newest hinted tool
+	// call shows its text on the ⎿ line until the next tool starts. Arbitrate
+	// by timestamp: the newer of (thinking segment, tool call start) wins.
+	const th = g.thinkingHint;
+	if (th && (!member || th.at > member.startedAt)) {
+		return { kind: "thinking", value: th.value };
+	}
+	return member?.classification?.hint;
 }
 
 /**

@@ -31,6 +31,12 @@ test("启动时把持久化的 ccToolsExtraDetail 回灌给 builtins（状态栏
 
 	const origCwd = process.cwd();
 	process.chdir(dir);
+	// readSettings 合并 [cwd, homedir]（homedir 靠后覆盖）。隔离 HOME 到一个
+	// 空目录，免得真实 ~/.pi/settings.json 里的显式 ccToolsExtraDetail 覆盖
+	// 本测试在 cwd 侧铺的值（POSIX 的 os.homedir() 优先 $HOME）。
+	const fakeHome = mkdtempSync(join(tmpdir(), "cc-extra-detail-home-"));
+	const origHome = process.env.HOME;
+	process.env.HOME = fakeHome;
 	try {
 		// 2) 在 chdir 之后再动态 import——commands.ts 在模块顶层读 settings（第 70-71 行），
 		//    import 时机决定它读到的是我们造的 cwd 设置。
@@ -70,5 +76,6 @@ test("启动时把持久化的 ccToolsExtraDetail 回灌给 builtins（状态栏
 		assert.match(text, /line-20\b/, `应能看到第 20 行，实际:\n${text}`);
 	} finally {
 		process.chdir(origCwd);
+		process.env.HOME = origHome;
 	}
 });

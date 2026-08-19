@@ -48,7 +48,9 @@ test("§5:493 新成员加入后，已结束的 leader 被促重渲染并接管�
 	// 重渲染 r1 → 现在是组 leader，画折叠摘要（"Read 2 files"），r2 隐藏（0 行）。
 	await pi.emit("tool_execution_end", { toolCallId: "r2", toolName: "read", result: { content: [{ type: "text", text: "y" }] }, isError: false });
 	const leader = renderCall(pi, "read", "r1", { path: "a.txt" });
-	assert.match(leader.text, /Read 2 files|read 2 files/i, `leader 应画整组摘要，实际: ${leader.text}`);
+	// 生成尚未结束(无 agent_end),CC v2.1.234 语义下组保持现在时 "Reading"。
+	// 本断言只关心 leader 接管整组(计数 2),时态两可。
+	assert.match(leader.text, /Read(ing)? 2 files/i, `leader 应画整组摘要，实际: ${leader.text}`);
 	const hidden = renderCall(pi, "read", "r2", { path: "b.txt" });
 	assert.equal(hidden.text, "", `非 leader 成员应渲染 0 行，实际: ${JSON.stringify(hidden.text)}`);
 });
