@@ -29,6 +29,7 @@ import type { ExtensionAPI, Theme } from "@earendil-works/pi-coding-agent";
 import { VERSION } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { tildeHome } from "./status-line.js";
+import { fg as paletteFg, resolvePalette } from "./palette.js";
 
 const SKILLS_MAX_ROWS = 6;
 /** Below this render width the banner degrades to the centered compact box. */
@@ -38,6 +39,20 @@ const FULL_MIN_WIDTH = 76;
 const MAX_LEFT_WIDTH = 50;
 const MIN_LEFT_WIDTH = 20;
 const RIGHT_MIN_WIDTH = 20;
+
+/** CC brand orange for the banner chrome — the theme's `accent` maps to CC's
+ *  suggestion blue (menus/selectors), so the banner resolves the CC palette
+ *  directly (memoized per theme name). */
+function ccAccent(theme: Theme): (s: string) => string {
+	const pal = resolvePalette(theme.name, (token) => {
+		try {
+			return theme.fg(token as never, "x");
+		} catch {
+			return undefined;
+		}
+	});
+	return (s) => paletteFg(pal.cc.claude, s);
+}
 
 // pi brand mark — the geometric P+i logo (pi.dev/logo-auto.svg), 6-row grid.
 const PI_LOGO: readonly string[] = [
@@ -301,7 +316,7 @@ export class BannerComponent {
 	}
 
 	private border(theme: Theme, text: string): string {
-		return theme.fg("accent", text);
+		return ccAccent(theme)(text);
 	}
 
 	/** The `resumed <id8> · <title>` identity line, or undefined on a fresh session. */
@@ -319,7 +334,7 @@ export class BannerComponent {
 	 */
 	private renderCondensed(width: number, theme: Theme): string[] {
 		const dim = (s: string): string => theme.fg("dim", s);
-		const accent = (s: string): string => theme.fg("accent", s);
+		const accent = ccAccent(theme);
 		const bold = (s: string): string => theme.bold(s);
 
 		const logoWidth = Math.max(...PI_LOGO.map((row) => visibleWidth(row)));
@@ -353,7 +368,7 @@ export class BannerComponent {
 
 	private renderWide(width: number, theme: Theme): string[] {
 		const dim = (s: string): string => theme.fg("dim", s);
-		const accent = (s: string): string => theme.fg("accent", s);
+		const accent = ccAccent(theme);
 		const bold = (s: string): string => theme.bold(s);
 
 		const welcome = this.info.welcome ?? "Welcome back!";
@@ -446,7 +461,7 @@ export class BannerComponent {
 	 */
 	private renderBoxed(width: number, theme: Theme): string[] {
 		const dim = (s: string): string => theme.fg("dim", s);
-		const accent = (s: string): string => theme.fg("accent", s);
+		const accent = ccAccent(theme);
 
 		const model = this.info.model() ?? "";
 		const cwd = truncatePath(this.info.cwd, MAX_LEFT_WIDTH - 4);
@@ -489,7 +504,7 @@ export class BannerComponent {
 	/** Borderless welcome + Extensions/Skills feeds under the boxed banner, indented 1. */
 	private renderBoxedTrailer(width: number, theme: Theme): string[] {
 		const dim = (s: string): string => theme.fg("dim", s);
-		const accent = (s: string): string => theme.fg("accent", s);
+		const accent = ccAccent(theme);
 		const bold = (s: string): string => theme.bold(s);
 		const usable = Math.max(1, width - 2);
 		// dsh-tui transcript.ts:702-714 — the trailer opens with the welcome
@@ -510,7 +525,7 @@ export class BannerComponent {
 
 	private renderCompact(width: number, theme: Theme): string[] {
 		const dim = (s: string): string => theme.fg("dim", s);
-		const accent = (s: string): string => theme.fg("accent", s);
+		const accent = ccAccent(theme);
 		const bold = (s: string): string => theme.bold(s);
 
 		const welcome = this.info.welcome ?? "Welcome back!";
@@ -561,7 +576,7 @@ export class BannerComponent {
 	 */
 	private renderCompactPlain(width: number, theme: Theme): string[] {
 		const dim = (s: string): string => theme.fg("dim", s);
-		const accent = (s: string): string => theme.fg("accent", s);
+		const accent = ccAccent(theme);
 		const bold = (s: string): string => theme.bold(s);
 		const w = Math.max(1, width);
 		const welcome = this.info.welcome ?? "Welcome back!";

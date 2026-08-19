@@ -156,13 +156,36 @@ export function registerCommands(pi: ExtensionAPI): void {
 		},
 	});
 
-	// /cc-theme — show the active theme and palette source.
+	// /cc-theme — pick one of the shipped CC themes (pi persists the choice via
+	// its setTheme path, settings.json `theme`). pi 0.84 has no built-in /theme
+	// command — theme switching lives in /settings — so this panel is the fast
+	// path for the six CC variants.
 	pi.registerCommand("cc-theme", {
-		description: "Show the active CC theme and palette source",
+		description: "Pick a Claude Code theme",
 		async handler(_args, ctx) {
 			if (!ctx.hasUI) return;
-			const themeName = ctx.ui.theme?.name ?? "unknown";
-			ctx.ui.notify(`Active theme: ${themeName}`, "info");
+			const themes = [
+				"claude-code-dark",
+				"claude-code-light",
+				"claude-code-dark-ansi",
+				"claude-code-light-ansi",
+				"claude-code-dark-daltonized",
+				"claude-code-light-daltonized",
+			];
+			const current = ctx.ui.theme?.name;
+			const choice = await ctx.ui.select(
+				current ? `Claude Code theme (current: ${current})` : "Claude Code theme",
+				themes,
+			);
+			if (!choice) return;
+			const result = ctx.ui.setTheme(choice) as { success?: boolean; error?: string } | boolean | undefined;
+			const failed = result === false || (typeof result === "object" && result !== null && result.success === false);
+			if (failed) {
+				const err = typeof result === "object" && result !== null ? result.error : undefined;
+				ctx.ui.notify(`Theme switch failed: ${err ?? choice}`, "error");
+				return;
+			}
+			ctx.ui.notify(`Theme: ${choice}`, "info");
 		},
 	});
 

@@ -21,7 +21,7 @@
     "bashMsgBg": "#413C41"
   },
   "colors": {
-    "accent": "claude",
+    "accent": "permission",
     "border": "subtle",
     "borderAccent": "claude",
     "borderMuted": "promptBorder",

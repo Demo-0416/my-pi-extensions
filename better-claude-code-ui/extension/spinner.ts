@@ -18,6 +18,7 @@
  * picked up immediately (no burn-in) and we own every color span.
  */
 import type { ExtensionAPI, Theme } from "@earendil-works/pi-coding-agent";
+import { fg as paletteFg, resolvePalette } from "./palette.js";
 
 // CC Spinner/utils.ts getDefaultCharacters(): Ghostty renders ✽ slightly offset,
 // so the last frame is * there.
@@ -342,10 +343,20 @@ export function registerSpinner(pi: ExtensionAPI): void {
 	}
 
 	function paintFor(theme: Theme): SpinnerPaint {
+		// CC messageColor 'claude' / shimmerColor 'claudeShimmer' are BRAND
+		// colors, not the UI accent: the theme's `accent` maps to CC's
+		// suggestion blue (menus, selectors), so the spinner resolves the CC
+		// palette directly (memoized per theme name).
+		const pal = resolvePalette(theme.name, (token) => {
+			try {
+				return theme.fg(token as never, "x");
+			} catch {
+				return undefined;
+			}
+		});
 		return {
-			// accent → claude; customMessageLabel → claudeShimmer (theme JSON).
-			accent: (s) => theme.fg("accent", s),
-			shimmer: (s) => theme.fg("customMessageLabel", s),
+			accent: (s) => paletteFg(pal.cc.claude, s),
+			shimmer: (s) => paletteFg(pal.cc.claudeShimmer, s),
 			dim: (s) => theme.fg("dim", s),
 		};
 	}
