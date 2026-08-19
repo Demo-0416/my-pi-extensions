@@ -15,16 +15,18 @@
  *     our transformer, assistant-message.js:112-119);
  *   - the transformer returns "" while collapsed — Markdown renders an empty
  *     string as ZERO rows, so collapsed thinking is truly invisible;
- *   - ctrl+shift+t (alt+t on legacy terminals — same Kitty-protocol caveat as
- *     commands.ts's ctrl+shift+o) toggles a module-level expanded flag, then
- *     calls setHiddenThinkingLabel, whose host path runs updateContent() on
- *     every history AssistantMessageComponent + the streaming one
+ *   - ctrl+t toggles a module-level expanded flag, then calls
+ *     setHiddenThinkingLabel, whose host path runs updateContent() on every
+ *     history AssistantMessageComponent + the streaming one
  *     (interactive-mode.js:1655-1666, assistant-message.js:46-50) — rebuilding
  *     each Markdown child so the transformer re-runs with the new state.
+ *     Extension shortcuts pre-empt built-in keybindings, so pi's own
+ *     app.thinking.toggle on the same key never fires while we're loaded.
  *
  * The hidden label itself stays "" — with hideThinkingBlock=false it is never
- * rendered, and if the user flips pi's own ctrl+t (hide=true) the fallback is
- * a single blank row rather than a stray "Thinking..." line.
+ * rendered, and if hideThinkingBlock is ever true again (extension not loaded,
+ * or the setting hand-edited) the fallback is a single blank row rather than a
+ * stray "Thinking..." line.
  *
  * AUDIT §5 thinking.ts:77 (P2 api-contract): the label is GLOBAL — it rewrites
  * every history component — so it must never carry per-block data (the
@@ -86,12 +88,16 @@ export function registerThinking(pi: ExtensionAPI): void {
 		}
 		ctx.ui.notify(`Thinking: ${thinkingExpanded ? "expanded" : "hidden"}`, "info");
 	};
-	pi.registerShortcut("ctrl+shift+t", {
+	// ctrl+t: extension shortcuts run BEFORE built-in keybindings
+	// (custom-editor.js:26 checks onExtensionShortcut first and stops on a
+	// match), so this fully takes over pi's own app.thinking.toggle — the
+	// hide-branch flip (which would render a stray blank label row) becomes
+	// unreachable while this extension is loaded. ^T is a plain C0 control
+	// byte, so no Kitty-protocol fallback key is needed (unlike ctrl+shift+o
+	// in commands.ts). ctrl+shift+t was tried first and lost a conflict to
+	// @juicesharp/rpiv-todo.
+	pi.registerShortcut("ctrl+t", {
 		description: "Toggle thinking visibility (CC-style)",
-		handler: toggle,
-	});
-	pi.registerShortcut("alt+t", {
-		description: "Toggle thinking visibility (fallback for terminals without the Kitty keyboard protocol)",
 		handler: toggle,
 	});
 
