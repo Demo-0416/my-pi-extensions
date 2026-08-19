@@ -111,8 +111,8 @@ function safeReaddir(dir: string): string[] {
 	}
 }
 
-/** Discover skill names from user, agent, and package skill directories. */
-function discoverSkills(): string[] {
+/** Discover skill names from user, agent, project, and package skill directories. */
+function discoverSkills(cwd: string): string[] {
 	const home = homedir();
 	const names = new Set<string>();
 	const collect = (dir: string): void => {
@@ -121,9 +121,11 @@ function discoverSkills(): string[] {
 			if (existsSync(join(dir, entry, "SKILL.md"))) names.add(entry);
 		}
 	};
-	// User + agent skills
+	// User + agent + project skills (pi resource-loader scans agentDir/skills
+	// and <cwd>/.pi/skills).
 	collect(join(home, ".pi", "agent", "skills"));
 	collect(join(home, ".agents", "skills"));
+	collect(join(cwd, ".pi", "skills"));
 	// Package skills: node_modules/<pkg>/skills/<skill>/ and @<scope>/<pkg>/skills/<skill>/
 	const nm = join(home, ".pi", "agent", "npm", "node_modules");
 	if (existsSync(nm)) {
@@ -142,14 +144,60 @@ function discoverSkills(): string[] {
 	return [...names].sort();
 }
 
-/** Discover extension names from the user extensions directory. */
-function discoverExtensions(): string[] {
+/** Path segments that carry no identity when naming an extension entry. */
+const GENERIC_SEGMENTS = new Set(["index", "main", "extension", "extensions", "src", "dist", "lib", ".", ".."]);
+
+/** Human name for a settings entry: `npm:pi-web-access` → pi-web-access,
+ *  `/…/better-claude-code-ui/extension/index.ts` → better-claude-code-ui. */
+export function extensionDisplayName(entry: string): string {
+	const spec = entry.replace(/^(npm|git|file):/, "");
+	const segments = spec.split("/").filter(Boolean);
+	for (let i = segments.length - 1; i >= 0; i--) {
+		const base = segments[i]!.replace(/\.(ts|js)$/, "");
+		if (!GENERIC_SEGMENTS.has(base)) return base;
+	}
+	return spec;
+}
+
+function readSettingsArray(path: string, key: string): string[] {
+	try {
+		if (!existsSync(path)) return [];
+		const raw = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
+		const v = raw[key];
+		return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
+	} catch {
+		return [];
+	}
+}
+
+/**
+ * Discover extension names the way pi actually loads them: the drop-in
+ * `~/.pi/agent/extensions/` dir PLUS the `extensions` (path entries) and
+ * `packages` (npm:/git: specs) arrays of the global, agent, and project
+ * settings.json. The old dir-only scan missed every path-configured extension
+ * (this one included) and all package-provided ones.
+ */
+function discoverExtensions(cwd: string): string[] {
+	const names = new Set<string>();
 	const dir = join(homedir(), ".pi", "agent", "extensions");
-	if (!existsSync(dir)) return [];
-	return safeReaddir(dir)
-		.filter((f) => f.endsWith(".ts") || f.endsWith(".js"))
-		.map((f) => f.replace(/\.(ts|js)$/, ""))
-		.sort();
+	if (existsSync(dir)) {
+		for (const f of safeReaddir(dir)) {
+			if (f.endsWith(".ts") || f.endsWith(".js")) names.add(f.replace(/\.(ts|js)$/, ""));
+		}
+	}
+	const settingsFiles = [
+		join(homedir(), ".pi", "settings.json"),
+		join(homedir(), ".pi", "agent", "settings.json"),
+		join(cwd, ".pi", "settings.json"),
+	];
+	for (const file of settingsFiles) {
+		for (const entry of [...readSettingsArray(file, "extensions"), ...readSettingsArray(file, "packages")]) {
+			// `-`/`!` prefixes are exclusion patterns, `+` is force-include.
+			if (entry.startsWith("-") || entry.startsWith("!")) continue;
+			names.add(extensionDisplayName(entry.replace(/^\+/, "")));
+		}
+	}
+	return [...names].sort();
 }
 
 /** Pack names into comma-separated rows that fit `width`, with a "+N more" tail. */
@@ -558,8 +606,8 @@ export function registerBanner(pi: ExtensionAPI): void {
 			cwd: ctx.cwd.replace(process.env.HOME ?? "", "~"),
 			resumed,
 			title: () => ctx.sessionManager.getSessionName(),
-			skills: discoverSkills(),
-			extensions: discoverExtensions(),
+			skills: discoverSkills(ctx.cwd),
+			extensions: discoverExtensions(ctx.cwd),
 			full: shouldShowFullBanner(ctx.cwd),
 		};
 		const banner = new BannerComponent(info);

@@ -599,14 +599,14 @@ export function registerBuiltins(pi: ExtensionAPI): void {
 		renderCall(args, theme, ctx) {
 			const c = ctx as unknown as RenderContext;
 			const grouped = renderGroupCall(c.toolCallId, theme, c);
-			if (grouped !== undefined) return makeText(c.lastComponent, grouped);
+			if (grouped !== undefined) return cachedText(c.lastComponent, grouped);
 			const summary = shortPath(c.cwd, String(args?.path ?? ""));
 			return makeText(c.lastComponent, toolHeader("Read", summary, theme, statusDot(c, theme)));
 		},
 		renderResult(result, { expanded, isPartial }, theme, ctx) {
 			const c = ctx as unknown as RenderContext;
 			const grouped = renderGroupResult(c.toolCallId, theme, c);
-			if (grouped !== undefined) return makeText(c.lastComponent, grouped);
+			if (grouped !== undefined) return cachedText(c.lastComponent, grouped);
 			if (isPartial) return cachedText(c.lastComponent, withResultLead(theme, theme.fg("dim", "Reading…")));
 			// CC FileReadTool/UI.tsx:152-160 — red error text on failure.
 			if (c.isError) {
@@ -663,7 +663,7 @@ export function registerBuiltins(pi: ExtensionAPI): void {
 		renderCall(args, theme, ctx) {
 			const c = ctx as unknown as RenderContext;
 			const grouped = renderGroupCall(c.toolCallId, theme, c);
-			if (grouped !== undefined) return makeText(c.lastComponent, grouped);
+			if (grouped !== undefined) return cachedText(c.lastComponent, grouped);
 			const summary = truncateCommand(String(args?.command ?? ""));
 			const header = toolHeader("Bash", summary, theme, statusDot(c, theme));
 			return makeText(c.lastComponent, header + liveLineCountTrailing(c, theme));
@@ -671,7 +671,7 @@ export function registerBuiltins(pi: ExtensionAPI): void {
 		renderResult(result, { expanded, isPartial }, theme, ctx) {
 			const c = ctx as unknown as RenderContext;
 			const grouped = renderGroupResult(c.toolCallId, theme, c);
-			if (grouped !== undefined) return makeText(c.lastComponent, grouped);
+			if (grouped !== undefined) return cachedText(c.lastComponent, grouped);
 			const output = resultText(result);
 
 			// Live preview while streaming: tail N lines + earlier-lines prefix.
@@ -755,7 +755,7 @@ export function registerBuiltins(pi: ExtensionAPI): void {
 		renderCall(args, theme, ctx) {
 			const c = ctx as unknown as RenderContext;
 			const grouped = renderGroupCall(c.toolCallId, theme, c);
-			if (grouped !== undefined) return makeText(c.lastComponent, grouped);
+			if (grouped !== undefined) return cachedText(c.lastComponent, grouped);
 			// CC GrepTool/UI.tsx:135-138 — `pattern: "foo", path: "src"`, pattern untruncated.
 			let summary = `pattern: "${String(args?.pattern ?? "")}"`;
 			if (args?.path) summary += `, path: "${args.path}"`;
@@ -764,7 +764,7 @@ export function registerBuiltins(pi: ExtensionAPI): void {
 		renderResult(result, { expanded, isPartial }, theme, ctx) {
 			const c = ctx as unknown as RenderContext;
 			const grouped = renderGroupResult(c.toolCallId, theme, c);
-			if (grouped !== undefined) return makeText(c.lastComponent, grouped);
+			if (grouped !== undefined) return cachedText(c.lastComponent, grouped);
 			if (isPartial) return cachedText(c.lastComponent, withResultLead(theme, theme.fg("dim", "Searching…")));
 			if (c.isError) {
 				return cachedText(c.lastComponent, withResultLead(theme, theme.fg("error", resultText(result) || "Error searching files")));
@@ -802,7 +802,7 @@ export function registerBuiltins(pi: ExtensionAPI): void {
 		renderCall(args, theme, ctx) {
 			const c = ctx as unknown as RenderContext;
 			const grouped = renderGroupCall(c.toolCallId, theme, c);
-			if (grouped !== undefined) return makeText(c.lastComponent, grouped);
+			if (grouped !== undefined) return cachedText(c.lastComponent, grouped);
 			let summary = `"${summarizeText(String(args?.pattern ?? ""), 40)}"`;
 			if (args?.path) summary += ` in ${args.path}`;
 			return makeText(c.lastComponent, toolHeader("Find", summary, theme, statusDot(c, theme)));
@@ -810,7 +810,7 @@ export function registerBuiltins(pi: ExtensionAPI): void {
 		renderResult(result, { expanded, isPartial }, theme, ctx) {
 			const c = ctx as unknown as RenderContext;
 			const grouped = renderGroupResult(c.toolCallId, theme, c);
-			if (grouped !== undefined) return makeText(c.lastComponent, grouped);
+			if (grouped !== undefined) return cachedText(c.lastComponent, grouped);
 			if (isPartial) return cachedText(c.lastComponent, withResultLead(theme, theme.fg("dim", "Finding…")));
 			if (c.isError) {
 				return cachedText(c.lastComponent, withResultLead(theme, theme.fg("error", resultText(result) || "Error finding files")));
@@ -845,14 +845,14 @@ export function registerBuiltins(pi: ExtensionAPI): void {
 		renderCall(args, theme, ctx) {
 			const c = ctx as unknown as RenderContext;
 			const grouped = renderGroupCall(c.toolCallId, theme, c);
-			if (grouped !== undefined) return makeText(c.lastComponent, grouped);
+			if (grouped !== undefined) return cachedText(c.lastComponent, grouped);
 			const summary = shortPath(c.cwd, String(args?.path ?? "."));
 			return makeText(c.lastComponent, toolHeader("List", summary, theme, statusDot(c, theme)));
 		},
 		renderResult(result, { expanded, isPartial }, theme, ctx) {
 			const c = ctx as unknown as RenderContext;
 			const grouped = renderGroupResult(c.toolCallId, theme, c);
-			if (grouped !== undefined) return makeText(c.lastComponent, grouped);
+			if (grouped !== undefined) return cachedText(c.lastComponent, grouped);
 			if (isPartial) return cachedText(c.lastComponent, withResultLead(theme, theme.fg("dim", "Listing…")));
 			if (c.isError) {
 				return cachedText(c.lastComponent, withResultLead(theme, theme.fg("error", resultText(result) || "Error listing directory")));
@@ -944,7 +944,7 @@ export function registerBuiltins(pi: ExtensionAPI): void {
 		renderCall(args, theme, ctx) {
 			const c = ctx as unknown as RenderContext;
 			const grouped = renderGroupCall(c.toolCallId, theme, c);
-			if (grouped !== undefined) return makeText(c.lastComponent, grouped);
+			if (grouped !== undefined) return cachedText(c.lastComponent, grouped);
 			// AUDIT §6 P1 — CC's transcript header verb is Create for a new file and
 			// Update for an overwrite (not the tool's userFacingName "Write").
 			// Signal source: the execute-time snapshot when we have it; before
