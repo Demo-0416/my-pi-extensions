@@ -2,6 +2,11 @@ node_modules/
 **/node_modules/
 **/shots/
 *.log
+.DS_Store
+
+# 审计过程产物（报告正文 AUDIT.md 入库，渲染版与调度文本不入）
+better-claude-code-ui/AUDIT.html
+better-claude-code-ui/DISPATCH.txt
 
 # 根目录本地开发残留（typescript typecheck），勿提交
 /package.json
