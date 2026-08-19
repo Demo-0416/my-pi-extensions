@@ -102,6 +102,25 @@ test("thinking_end 后 ⎿ hint 显示 thinking 文本;新工具启动后换回�
 	assert.match(withTool, /⎿\s+"foo"/, `新工具启动后 ⎿ 应显示其 pattern,实际:\n${withTool}`);
 });
 
+test("真实 pi 时序:工具结束 → 下一迭代 turn_start → thinking_end,⎿ 仍显示 thinking 文本", async () => {
+	// pi 的 turn_start 在每次 LLM 调用前发(AUDIT §3-2),thinking 发生在
+	// 工具批次之间的新迭代里。组窗口是 run 级,不被 turn_start 打断。
+	const pi = await loadExtension();
+	await beginTurn(pi);
+	await readCall(pi, "r1");
+	await new Promise((r) => setTimeout(r, 2));
+
+	// 下一次 LLM 迭代开始,随后思考完一段。
+	await pi.emit("turn_start", { turnIndex: 1, timestamp: Date.now() });
+	await pi.emit("message_update", {
+		message: { role: "assistant", content: [{ type: "thinking", thinking: "x" }] },
+		assistantMessageEvent: { type: "thinking_end", contentIndex: 0, content: "接下来 grep 一下" },
+	});
+	const text = summaryOf(pi, "r1");
+	assert.match(text, /⎿\s+接下来 grep 一下/, `跨迭代的 thinking 文本应显示在组 ⎿,实际:\n${text}`);
+	assert.match(text, /Reading 1 file/i, `组应仍保持现在时,实际:\n${text}`);
+});
+
 test("thinking 完成于组建立之前:文本随下一个组出现在 ⎿", async () => {
 	const pi = await loadExtension();
 	await beginTurn(pi);

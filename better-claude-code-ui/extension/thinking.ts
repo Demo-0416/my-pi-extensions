@@ -44,7 +44,6 @@
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { dim, italic } from "./palette.js";
-import { currentWorkingVerb } from "./spinner.js";
 
 const THINKING_TITLE = "∴ Thinking…";
 // CC AssistantThinkingMessage.tsx:44 collapsed line. CC's literal is
@@ -52,18 +51,7 @@ const THINKING_TITLE = "∴ Thinking…";
 // so name the key that actually works in pi.
 const HIDDEN_LABEL_THINKING = "∴ Thinking (ctrl+t to expand)";
 
-/** CC effort.ts:188-196 — the spinner row names the active thinking level. */
-function thinkingText(level: string | undefined): string {
-	if (!level || level === "none" || level === "off") return dim("(thinking)");
-	return dim(`(thinking · ${level})`);
-}
-
 export function registerThinking(pi: ExtensionAPI): void {
-	// Whether a thinking block opened without a matching thinking_end, so the
-	// abort path can restore the spinner verb. NOT a duration — the global
-	// hidden label must never carry per-block data (AUDIT §5 thinking.ts:77).
-	let thinkingActive = false;
-
 	// --- 1. Expanded-shape title for every thinking block -----------------
 	pi.registerMarkdownTransformer((markdown, { messageType }) => {
 		if (messageType !== "assistant-thinking") return markdown;
@@ -86,9 +74,8 @@ export function registerThinking(pi: ExtensionAPI): void {
 		}
 	});
 
-	// --- 3. Spinner working message: (thinking) → verb -------------------
+	// --- 3. Keep the global collapsed-line label asserted ------------------
 	pi.on("turn_start", async (_event, ctx) => {
-		thinkingActive = false;
 		if (!ctx.hasUI) return;
 		try {
 			// The label is constant, but keep it asserted in case anything else
@@ -99,49 +86,10 @@ export function registerThinking(pi: ExtensionAPI): void {
 		}
 	});
 
-	pi.on("message_update", async (event, ctx) => {
-		const kind = event.assistantMessageEvent?.type;
-		if (kind === "thinking_start") {
-			thinkingActive = true;
-			if (ctx.hasUI) {
-				try {
-					ctx.ui.setWorkingMessage(thinkingText(ctx.thinkingLevel));
-				} catch {
-					/* best-effort */
-				}
-			}
-		} else if (kind === "thinking_end") {
-			thinkingActive = false;
-			if (ctx.hasUI) {
-				try {
-					// Restore the turn's spinner verb (CC: thinking text gives
-					// way to the verb once the block ends).
-					ctx.ui.setWorkingMessage(`${currentWorkingVerb()}…`);
-				} catch {
-					/* best-effort */
-				}
-			}
-		}
-	});
+	// Spinner-row thinking display (the "(thinking)" byline segment, including
+	// the message_end abort fallback) is owned entirely by spinner.ts — its 50ms
+	// repaint loop listens to thinking_start/end itself. Writing the working
+	// message from here too raced it: a glyph-less bare line flickered for a
+	// frame before the spinner's repaint overwrote it (对抗复审 confirmed).
 
-	pi.on("message_end", async (event, ctx) => {
-		// AUDIT §5 thinking.ts:114 (P3 correctness): message_end fires for user
-		// prompts (pi agent-loop.js:53) and toolResult messages (:551) too, not
-		// just assistant messages. Only assistant messages carry thinking, so
-		// ignore the rest — otherwise a user/tool message_end arriving while a
-		// block is open would wrongly clear the (thinking) spinner state.
-		if (event.message?.role !== "assistant") return;
-		// Abort path: thinking_end may never fire when the stream dies (pi goes
-		// through message_end with a failure message), leaving the spinner stuck
-		// on `(thinking)`. Restore the verb when a block was left open — CC
-		// settles thinking on mode-leave, not on the event (Spinner.tsx:136-153).
-		if (!thinkingActive) return;
-		thinkingActive = false;
-		if (!ctx.hasUI) return;
-		try {
-			ctx.ui.setWorkingMessage(`${currentWorkingVerb()}…`);
-		} catch {
-			/* best-effort */
-		}
-	});
 }

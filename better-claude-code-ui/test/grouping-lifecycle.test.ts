@@ -55,20 +55,27 @@ test("§5:493 新成员加入后，已结束的 leader 被促重渲染并接管�
 	assert.equal(hidden.text, "", `非 leader 成员应渲染 0 行，实际: ${JSON.stringify(hidden.text)}`);
 });
 
-test("§5:399 turn_start 后历史组仍折叠：leader 画摘要、成员隐藏（不炸开）", async () => {
+test("§5:399 新请求(run)开始后历史组仍折叠：leader 画摘要、成员隐藏（不炸开）", async () => {
 	const pi = new FakePi();
 	await loadExtension(pi);
 	await pi.emit("session_start", { reason: "startup" });
 	await pi.emit("agent_start");
-	// turn 1：两个 read 成组并结束。
+	// run 1：两个 read 成组并结束。中途的 turn_start（每次 LLM 迭代一发）
+	// 不再是归档边界——组窗口是 run 级(agent_start..agent_end)。
 	await pi.emit("turn_start", { turnIndex: 0, timestamp: Date.now() });
 	await pi.emit("tool_execution_start", { toolCallId: "r1", toolName: "read", args: { path: "a.txt" } });
 	await pi.emit("tool_execution_start", { toolCallId: "r2", toolName: "read", args: { path: "b.txt" } });
 	await pi.emit("tool_execution_end", { toolCallId: "r1", toolName: "read", result: { content: [{ type: "text", text: "x" }] }, isError: false });
 	await pi.emit("tool_execution_end", { toolCallId: "r2", toolName: "read", result: { content: [{ type: "text", text: "y" }] }, isError: false });
-
-	// turn 2 开始：清空当前 groups，但归档 turn-1 组。
+	// run 内的下一次 LLM 迭代:不得炸开当前组。
 	await pi.emit("turn_start", { turnIndex: 1, timestamp: Date.now() });
+	const midRun = renderCall(pi, "read", "r1", { path: "a.txt" }, false);
+	assert.match(midRun.text, /Read(ing)? 2 files/i, `run 内 turn_start 不应炸开组，实际: ${midRun.text}`);
+
+	// run 1 结束、run 2 开始(新用户请求):归档 run-1 组。
+	await pi.emit("agent_end");
+	await new Promise((r) => setTimeout(r, 0));
+	await pi.emit("agent_start");
 
 	// 模拟 Ctrl+O 全局重渲染：重画 turn-1 的成员。历史组应仍折叠。
 	const leader = renderCall(pi, "read", "r1", { path: "a.txt" }, false);

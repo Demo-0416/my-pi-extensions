@@ -223,7 +223,11 @@ function parsePatchToDiff(patch: string): ParsedDiff | null {
 	let newLine = 0;
 	let inHunk = false;
 	let prevHunk: { oldStart: number; oldLines: number } | null = null;
-	for (const raw of rawLines) {
+	for (const rawWithCr of rawLines) {
+		// pi generateUnifiedPatch splits on "\n" only, so CRLF files leave a
+		// trailing \r on every patch line — carriage returns wipe the drawn
+		// gutter at render time (same cleanse as diff.ts fromPatch, §5:523).
+		const raw = rawWithCr.endsWith("\r") ? rawWithCr.slice(0, -1) : rawWithCr;
 		const h = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/.exec(raw);
 		if (h) {
 			const oldStart = Number(h[1]);

@@ -28,6 +28,7 @@ import { join } from "node:path";
 import type { ExtensionAPI, Theme } from "@earendil-works/pi-coding-agent";
 import { VERSION } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { tildeHome } from "./status-line.js";
 
 const SKILLS_MAX_ROWS = 6;
 /** Below this render width the banner degrades to the centered compact box. */
@@ -190,13 +191,25 @@ function discoverExtensions(cwd: string): string[] {
 		join(homedir(), ".pi", "agent", "settings.json"),
 		join(cwd, ".pi", "settings.json"),
 	];
+	// Two passes: `-`/`!` entries are exclusion patterns that apply to OTHER
+	// entries (pi package-manager semantics), not just themselves — collect
+	// them first, then filter the display set.
+	const excluded = new Set<string>();
+	const candidates: string[] = [];
 	for (const file of settingsFiles) {
 		for (const entry of [...readSettingsArray(file, "extensions"), ...readSettingsArray(file, "packages")]) {
-			// `-`/`!` prefixes are exclusion patterns, `+` is force-include.
-			if (entry.startsWith("-") || entry.startsWith("!")) continue;
-			names.add(extensionDisplayName(entry.replace(/^\+/, "")));
+			if (entry.startsWith("-") || entry.startsWith("!")) {
+				excluded.add(extensionDisplayName(entry.slice(1)));
+				continue;
+			}
+			candidates.push(entry.replace(/^\+/, ""));
 		}
 	}
+	for (const entry of candidates) {
+		const name = extensionDisplayName(entry);
+		if (!excluded.has(name)) names.add(name);
+	}
+	for (const name of excluded) names.delete(name);
 	return [...names].sort();
 }
 
@@ -603,7 +616,9 @@ export function registerBanner(pi: ExtensionAPI): void {
 				: undefined;
 		const info: BannerInfo = {
 			model: () => ctx.model?.id,
-			cwd: ctx.cwd.replace(process.env.HOME ?? "", "~"),
+			// tildeHome guards the HOME-unset / non-prefix cases (§5 status-line.ts:66
+			// fixed the same bare-replace bug; reuse its guarded helper).
+			cwd: tildeHome(ctx.cwd),
 			resumed,
 			title: () => ctx.sessionManager.getSessionName(),
 			skills: discoverSkills(ctx.cwd),

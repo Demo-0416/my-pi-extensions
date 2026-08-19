@@ -80,9 +80,11 @@ export function registerStatusLine(pi: ExtensionAPI): void {
 		const sessionStartMs = earliestMs;
 
 		pi.on("message_end", async (event) => {
-			if (event.message.role === "assistant") {
-				cost += event.message.usage.cost.total;
-			} else if (event.message.role === "user") {
+			// Optional-chain the whole path: a failure-path assistant message may
+			// carry no usage, and defensive handlers must not throw in the bus.
+			if (event.message?.role === "assistant") {
+				cost += (event.message as { usage?: { cost?: { total?: number } } }).usage?.cost?.total ?? 0;
+			} else if (event.message?.role === "user") {
 				turns += 1;
 			}
 		});
