@@ -7,10 +7,14 @@
  *   3. tools/             CC-style tool rendering (builtins, diff, grouping)
  *   4. thinking           CC-style thinking title + hidden label + spinner row
  *
- * Only pi public APIs are used; no prototype/monkey patches.
+ * Layers 1-4 use only pi public extension APIs. host-patches.ts additionally
+ * wraps two prototype methods of PUBLIC pi exports (AssistantMessageComponent,
+ * InteractiveMode) as the extension-side landing of the upstream PR draft —
+ * see its header for scope and removal criteria.
  * See ALIGNMENT.md for the per-module CC source mapping.
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { installHostPatches } from "./host-patches.js";
 import { registerSpinner } from "./spinner.js";
 import { registerTurnFooter } from "./turn-footer.js";
 import { registerBanner } from "./banner.js";
@@ -22,6 +26,9 @@ import { registerThinking } from "./thinking.js";
 import { registerPromptPointer } from "./prompt-editor.js";
 
 export default function (pi: ExtensionAPI) {
+	// Host patches (ghost blank rows, ctrl+o status residue) — before any render.
+	installHostPatches();
+
 	// Layer 2: chrome
 	registerSpinner(pi);
 	registerTurnFooter(pi);

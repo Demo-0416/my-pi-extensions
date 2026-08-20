@@ -15,6 +15,7 @@ import { bustGroupingSettingsCache, repaintGroupedRows } from "./tools/grouping.
 
 const SETTINGS_KEY_GROUP = "groupToolCalls";
 const SETTINGS_KEY_EXTRA_DETAIL = "ccToolsExtraDetail";
+const SETTINGS_KEY_CC_THEME = "ccTheme";
 
 // Old-ext settings cache (index.ts:121-143): merged cwd + home settings, 5s TTL.
 let settingsCache: { value: Record<string, unknown>; timestamp: number } | null = null;
@@ -85,6 +86,26 @@ export function registerCommands(pi: ExtensionAPI): void {
 	// = setDetail(false)，把两边都归到 off，看起来“第一次快捷键空按/反而关掉”。
 	// 在这里一次性同步：让 builtins 的开关与持久化/显示状态一致。
 	setExtraDetail(extraDetail);
+
+	// Restore the CC theme if pi fell back to its built-in default at startup.
+	// This happens when the CC theme package isn't registered yet when pi
+	// applies the saved theme (package resolution timing in createStartupTui).
+	// pi's initTheme catches the load failure and silently falls back to
+	// "dark"; without this restore, the user's /cc-theme choice is lost for
+	// the rest of the session.
+	pi.on("session_start", async (_event, ctx) => {
+		if (!ctx.hasUI) return;
+		const saved = readSettings()[SETTINGS_KEY_CC_THEME];
+		if (typeof saved !== "string" || !saved.startsWith("claude-code-")) return;
+		const current = ctx.ui.theme?.name;
+		// Only re-apply when the theme fell back to pi's built-in default.
+		// If the user intentionally switched to dark/light via /settings,
+		// this overrides that choice — but a CC-extension user who picked a
+		// CC theme via /cc-theme expects it to stick across projects.
+		if (current === "dark" || current === "light") {
+			ctx.ui.setTheme(saved);
+		}
+	});
 
 	const setDetail = (v: boolean) => {
 		extraDetail = v;
@@ -186,6 +207,12 @@ export function registerCommands(pi: ExtensionAPI): void {
 				return;
 			}
 			ctx.ui.notify(`Theme: ${choice}`, "info");
+			// Belt-and-suspenders: persist the choice to the extension's own settings
+			// file too. pi's setTheme already writes ~/.pi/agent/settings.json, but
+			// if the CC theme package isn't registered yet at startup (package
+			// resolution timing), pi silently falls back to "dark" and never
+			// recovers. The session_start handler below restores it.
+			writeSettingsKey(SETTINGS_KEY_CC_THEME, choice);
 		},
 	});
 
