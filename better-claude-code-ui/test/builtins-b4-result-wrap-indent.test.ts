@@ -8,7 +8,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { FakePi, FakeTheme, loadExtension, makeToolCtx } from "./harness.js";
-import { plain } from "./helpers.js";
+import { plain, renderLines, width } from "./helpers.js";
 
 test("单行超长结果：词换行续行缩进到第 5 列，不掉回第 0 列", async () => {
 	const pi = await loadExtension();
@@ -55,4 +55,28 @@ test("多行结果里的长行：每条逻辑行的续行都缩进到第 5 列",
 		// 逻辑行首（短行 short line one）也应保持在第 5 列，因为结果体统一缩进。
 		assert.match(line, /^ {5}/, `行 ${i} 应至少缩进 5 列:\n[${line}]`);
 	}
+});
+
+test("流式 Bash 状态后的首条输出保留 gutter，Go tab 行不得超宽", async () => {
+	const pi = await loadExtension();
+	const bash = pi.tools.get("bash")!;
+	const theme = new FakeTheme();
+	const terminalWidth = 62;
+	// Go test 的真实输出是 `?   \\t<package>\\t[no test files]`。此前首条
+	// preview 未缩进，包装器把 `?   \\t` 误认成 5 列 gutter，渲染出 64 列。
+	const output = "?   \tcode.byted.org/douyin/discovery_hot_event/application/eventbus\t[no test files]";
+	const { ctx } = makeToolCtx({ args: { command: "go test ./application/eventbus" }, isPartial: true });
+	const comp = bash.renderResult(
+		{ content: [{ type: "text", text: output }] },
+		{ expanded: false, isPartial: true },
+		theme,
+		ctx,
+	);
+
+	const rendered = renderLines(comp, terminalWidth);
+	for (const line of rendered) {
+		assert.ok(width(line) <= terminalWidth, `行宽 ${width(line)} 不应超过 ${terminalWidth}: ${JSON.stringify(line)}`);
+	}
+	const text = plain(comp, terminalWidth);
+	assert.match(text[1]!, /^ {5}\?/, `Running 状态后的输出应从第 5 列开始:\n${text.join("\n")}`);
 });

@@ -392,10 +392,11 @@ const RESULT_CONTENT_COL = RESULT_INDENT.length; // 5
  */
 function wrapResultBody(text: string, width: number, indent: number): string[] {
 	const out: string[] = [];
+	const maxWidth = Math.max(1, Math.floor(width));
 	const pad = " ".repeat(indent);
-	const contentWidth = Math.max(1, width - indent);
+	const contentWidth = Math.max(1, maxWidth - indent);
 	for (const logical of text.split("\n")) {
-		if (visibleWidth(logical) <= width) {
+		if (visibleWidth(logical) <= maxWidth) {
 			out.push(logical);
 			continue;
 		}
@@ -407,7 +408,9 @@ function wrapResultBody(text: string, width: number, indent: number): string[] {
 		out.push(`${gutter}${wrapped[0] ?? ""}`);
 		for (let i = 1; i < wrapped.length; i++) out.push(`${pad}${wrapped[i]}`);
 	}
-	return out;
+	// Component.render() has a hard width contract. Keep a final ANSI-aware
+	// guard even when an upstream line contains unusual whitespace or controls.
+	return out.map((line) => (visibleWidth(line) <= maxWidth ? line : truncateToWidth(line, maxWidth, "")));
 }
 
 class CachedTextComponent implements Component {
@@ -643,7 +646,7 @@ export function registerBuiltins(pi: ExtensionAPI): void {
 			if (!expanded) return cachedText(c.lastComponent, withResultLead(theme, text));
 			const lines = visibleContent.split("\n");
 			const preview = buildPreviewText(lines, theme, previewLimit(), lines.length, (l) => theme.fg("dim", l));
-			return cachedText(c.lastComponent, `${withResultLead(theme, text)}\n${indentResultBody(preview)}`);
+			return cachedText(c.lastComponent, leadBody(theme, `${text}\n${preview}`));
 		},
 	});
 
@@ -688,7 +691,7 @@ export function registerBuiltins(pi: ExtensionAPI): void {
 				const body = buildTailPreview(collected.lines, collected.total, theme, previewLimit(), (l) =>
 					theme.fg("dim", l),
 				);
-				return cachedText(c.lastComponent, `${withResultLead(theme, theme.fg("dim", "Running…"))}\n${indentResultBody(body)}`);
+				return cachedText(c.lastComponent, leadBody(theme, `${theme.fg("dim", "Running…")}\n${body}`));
 			}
 
 			// Completed.
@@ -720,7 +723,7 @@ export function registerBuiltins(pi: ExtensionAPI): void {
 				const body = buildTailPreview(collected.lines, collected.total, theme, previewLimit(), (l) =>
 					theme.fg("dim", l),
 				);
-				return cachedText(c.lastComponent, `${withResultLead(theme, status)}\n${indentResultBody(body)}`);
+				return cachedText(c.lastComponent, leadBody(theme, `${status}\n${body}`));
 			}
 
 			// Success with output: no status line, output only.
@@ -785,7 +788,7 @@ export function registerBuiltins(pi: ExtensionAPI): void {
 			const stat = `Found ${theme.bold(String(files))} ${files === 1 ? "file" : "files"}`;
 			if (!expanded) return cachedText(c.lastComponent, withResultLead(theme, stat));
 			const body = buildPreviewText(matches, theme, previewLimit(), matches.length, (l) => theme.fg("dim", l));
-			return cachedText(c.lastComponent, `${withResultLead(theme, stat)}\n${indentResultBody(body)}`);
+			return cachedText(c.lastComponent, leadBody(theme, `${stat}\n${body}`));
 		},
 	});
 
@@ -828,7 +831,7 @@ export function registerBuiltins(pi: ExtensionAPI): void {
 			const stat = `${theme.bold(String(items.length))} ${items.length === 1 ? "file" : "files"}`;
 			if (!expanded) return cachedText(c.lastComponent, withResultLead(theme, stat));
 			const body = buildPreviewText(items, theme, previewLimit(), items.length, (l) => theme.fg("dim", l));
-			return cachedText(c.lastComponent, `${withResultLead(theme, stat)}\n${indentResultBody(body)}`);
+			return cachedText(c.lastComponent, leadBody(theme, `${stat}\n${body}`));
 		},
 	});
 
@@ -870,7 +873,7 @@ export function registerBuiltins(pi: ExtensionAPI): void {
 			const stat = `${theme.bold(String(items.length))} ${items.length === 1 ? "entry" : "entries"}`;
 			if (!expanded) return cachedText(c.lastComponent, withResultLead(theme, stat));
 			const body = buildPreviewText(items, theme, previewLimit(), items.length, (l) => theme.fg("dim", l));
-			return cachedText(c.lastComponent, `${withResultLead(theme, stat)}\n${indentResultBody(body)}`);
+			return cachedText(c.lastComponent, leadBody(theme, `${stat}\n${body}`));
 		},
 	});
 
@@ -1047,7 +1050,7 @@ export function registerBuiltins(pi: ExtensionAPI): void {
 						c.invalidate();
 					});
 				}
-				return cachedText(c.lastComponent, `${withResultLead(theme, head)}\n${indentResultBody(body)}`);
+				return cachedText(c.lastComponent, leadBody(theme, `${head}\n${body}`));
 			}
 
 			// Existing file (or expanded new file): diff card. CC puts stat and
