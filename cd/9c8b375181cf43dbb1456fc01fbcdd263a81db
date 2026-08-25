@@ -1,0 +1,26 @@
+better-claude-code-ui/extension/tools/builtins.ts
+  s_c7bade3472bdc6::t_4fdc2b45389830 395,397,399,411-413,649,694,726,791,834,876,1053
+better-claude-code-ui/test/builtins-b4-result-wrap-indent.test.ts
+  s_c7bade3472bdc6::t_3b515b75d56bac 11,59-81
+  s_c7bade3472bdc6::t_6c95176287133f 82
+better-claude-code-ui/package.json
+  s_c7bade3472bdc6::t_3c46dc5d2cdb2f 3
+better-claude-code-ui/package-lock.json
+  s_c7bade3472bdc6::t_f767e49efe2fa8 3,9
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.24",
+  "base_commit_sha": "cd9c8b375181cf43dbb1456fc01fbcdd263a81db",
+  "prompts": {},
+  "sessions": {
+    "s_c7bade3472bdc6": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a03851-1670-7947-9e8e-34e394e92bf5",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Demo-0416 <145474865+Demo-0416@users.noreply.github.com>"
+    }
+  }
+}
