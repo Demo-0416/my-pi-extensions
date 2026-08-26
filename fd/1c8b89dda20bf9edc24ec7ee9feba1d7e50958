@@ -1,0 +1,19 @@
+better-claude-code-ui/package.json
+  s_7b26dd982e8b3d::t_8216392083f392 39-40
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.24",
+  "base_commit_sha": "fd1c8b89dda20bf9edc24ec7ee9feba1d7e50958",
+  "prompts": {},
+  "sessions": {
+    "s_7b26dd982e8b3d": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a03ef7-8ddf-75aa-a9f9-6e5b42cf5341",
+        "model": "es1_orange_o50"
+      },
+      "human_author": "Demo-0416 <145474865+Demo-0416@users.noreply.github.com>"
+    }
+  }
+}
