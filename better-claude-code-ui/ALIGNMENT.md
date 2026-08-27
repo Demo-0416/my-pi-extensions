@@ -65,7 +65,8 @@
 4. bash result：stdout 默认色；有 stderr 时 stderr 行 error 红；无输出 dim `Done`；exit≠0 时首行 `⎿ ` 改 error 色 + exit code。
 5. read/grep/glob 折叠态：`⎿ Read N lines` / `⎿ Found N files`（数字 bold）；expanded 才出预览。
 6. edit/write：stat 行 `⎿ Added N lines, Removed M lines`（数字 bold）+ diff（diff.ts 出品）。
-7. live preview（bash 运行中）：tail N 行 + header 尾随 `(N lines)` 实时行数 + `... (N earlier lines)` 前缀（旧 ext 机制）；partial 进入时重新武装 blink；完成后折叠态保留 tail。
+7. live preview（bash 运行中）：tail 5 视觉行（CC `ShellProgressMessage.tsx:44` `lines.slice(-5)` + height-5 clipped Box）+ header 尾随 `(N lines)` 实时行数；partial 进入时重新武装 blink。**完成后折叠态翻成头部优先**（CC `OutputLine` → `terminal.ts:71 renderTruncatedContent`）：折行后前 N 视觉行 + `… +N lines (ctrl+o to expand)`。
+7-1. 预览预算的单位是**折行后的视觉行**，不是逻辑行；且折行前先把输入 slice 到 `rows × wrapWidth × 4`，剩余量由 `ceil(len/wrapWidth) - rows` 估算（CC `terminal.ts:85-99`）。少了这两道闸，`grep -rn` 打到 minified bundle（2 个逻辑行 / 50KB）会渲染出 654 行、heapΔ 27.9MB —— CC 注释里记的同一个坑是 "64MB binary dumps that cause 382K-row screens"。
 8. 渲染缓存：key = `${toolCallId}:${width}:${expanded}:${isPartial}`，值 = {lines}，避免每帧重包（dsh-tui CachedCardComponent 模式）。
 9. 修 bug：`writeExistedBefore` 在 renderResult 错误分支也要 delete（builtins.ts:451）。
 10. 修 bug：diff 宽度从 render 上下文取（pi render 回调有 width 参数），不要硬编码 100。

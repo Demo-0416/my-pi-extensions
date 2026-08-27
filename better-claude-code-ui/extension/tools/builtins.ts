@@ -13,6 +13,11 @@
  * - Bash detail: 2 lines / 160 chars (BashTool/UI.tsx:26-127)
  * - Bash result: status line only when there is no output (or on failure);
  *   no output → dim "(No output)" (BashToolResultMessage.tsx:100-169)
+ * - Result preview budget is in VISUAL rows (post-wrap), head-first, with a
+ *   `… +N lines (ctrl+o to expand)` footer, and the input is sliced to
+ *   `rows × wrapWidth × 4` BEFORE wrapping (utils/terminal.ts:7-113
+ *   renderTruncatedContent, reached via OutputLine.tsx:73). Streaming keeps a
+ *   5-row TAIL window instead (ShellProgressMessage.tsx:44,83).
  * - Edit/Write stat: "Added N lines, Removed M lines" numbers bold
  *   (FileEditToolUpdatedMessage.tsx:32-110)
  * - Read/Grep collapsed: "Read N lines" / "Found N files" numbers bold
@@ -92,6 +97,17 @@ const MAX_WRITE_SNAPSHOTS = 64;
 
 const PREVIEW_LINES = 8;
 const EXTRA_DETAIL_LINES = 12000;
+
+// CC ShellProgressMessage.tsx:44,83 — the streaming preview is a fixed 5-row
+// tail window (`lines.slice(-5)` inside `<Box height={5} overflow="hidden">`).
+// Completed results flip to head-first (renderTruncatedContent); only the live
+// view tails, because tailing is the point while output is still arriving.
+const STREAM_PREVIEW_ROWS = 5;
+
+// The expanded-group glance body is composed into one string by the leader, so
+// no render width reaches it. 80 columns is the conventional fallback and only
+// affects where a long row is chunked, not the row budget itself.
+const GROUP_PREVIEW_NOMINAL_WIDTH = 80;
 
 let extraDetail = false;
 export function setExtraDetail(v: boolean): void {
@@ -293,6 +309,160 @@ function countGrepFiles(lines: string[]): number {
 	return files.size;
 }
 
+// ---------------------------------------------------------------------------
+// CC-faithful visual-row truncation (port of CC src/utils/terminal.ts:7-113)
+//
+// The bug this replaces: our preview budget counted LOGICAL lines while CC and
+// pi both count VISUAL rows (post-wrap). `grep -rn` over a minified bundle is
+// 2 logical lines / 50KB, so an 8-logical-line budget was no budget at all —
+// measured 654 rendered rows at width 100 (pi's own bash renderer: 5) and a
+// 27.9MB heap delta, because every one of the 50KB got wrapped. CC hit the
+// same wall ("64MB binary dumps that cause 382K-row screens", terminal.ts:83)
+// and fixed it with the two guards ported below:
+//   1. budget in visual rows, chunking long lines by width (CC wrapText);
+//   2. slice the input to `rows * wrapWidth * 4` BEFORE wrapping, and estimate
+//      the remainder from raw length, so cost is bounded by the budget rather
+//      than by output size (CC renderTruncatedContent).
+// ---------------------------------------------------------------------------
+
+/** CC terminal.ts:85 — only wrap enough input to fill the budget. The ×4 slack
+ *  covers ANSI escapes and wide characters that make bytes ≠ columns. */
+function preWrapCharCap(rows: number, wrapWidth: number): number {
+	return Math.max(1, rows) * wrapWidth * 4;
+}
+
+/** CC terminal.ts:36 trims each chunk's trailing whitespace (trimEnd) but keeps
+ *  a leading space: hard chunking at a column boundary can start a row mid-gap,
+ *  and CC preserves that alignment rather than re-flowing the text. */
+function trimTrailingSpace(text: string): string {
+	return text.replace(/[ \t]+$/, "");
+}
+
+/**
+ * CC terminal.ts:19-60 wrapText — split into visual rows by hard-chunking at
+ * `wrapWidth` (NOT word wrapping: shell output is not prose, and CC slices
+ * mid-word), then keep the first `rows`.
+ *
+ * CC's `remainingLines === 1` special case is preserved: showing one extra row
+ * beats spending that row on a "… +1 lines" hint.
+ */
+function visualRowsHead(text: string, wrapWidth: number, rows: number): { shown: string[]; remaining: number } {
+	const width = Math.max(1, Math.floor(wrapWidth));
+	const wrapped: string[] = [];
+	for (const line of text.split("\n")) {
+		const lineWidth = visibleWidth(line);
+		if (lineWidth <= width) {
+			wrapped.push(trimTrailingSpace(line));
+		} else {
+			// ANSI-aware chunking; sliceByColumn re-opens active SGR state per chunk.
+			// NB: its 3rd argument is a LENGTH, not an end column (pi-tui
+			// utils.d.ts:78) — passing `col + width` there yields ever-widening
+			// chunks that overflow the gutter and duplicate the tail.
+			for (let col = 0; col < lineWidth; col += width) {
+				wrapped.push(trimTrailingSpace(sliceByColumn(line, col, width)));
+				// Stop early once past the budget — the caller only needs `rows` plus
+				// enough to know that more exists.
+				if (wrapped.length > rows + 1) break;
+			}
+		}
+		if (wrapped.length > rows + 1) break;
+	}
+	const remaining = wrapped.length - rows;
+	// CC terminal.ts:44-53 — exactly one row past the fold: show it instead.
+	if (remaining === 1) return { shown: wrapped.slice(0, rows + 1), remaining: 0 };
+	return { shown: wrapped.slice(0, rows), remaining: Math.max(0, remaining) };
+}
+
+/**
+ * CC terminal.ts:71-113 renderTruncatedContent — head-first visual-row preview
+ * with a `… +N lines (ctrl+o to expand)` footer.
+ *
+ * `rows` is the visual-row budget; `wrapWidth` is the content width (terminal
+ * width minus the `⎿  ` gutter). Returns styled text ready for leadBody().
+ */
+function renderTruncatedContent(
+	text: string,
+	wrapWidth: number,
+	rows: number,
+	theme: Theme,
+	styleLine: (line: string) => string,
+	options: { expandHint?: boolean } = {},
+): string {
+	const trimmed = text.replace(/\s+$/, "");
+	if (trimmed === "") return "";
+	const width = Math.max(1, Math.floor(wrapWidth));
+
+	// Guard 2: bound the work by the budget, not by the input size.
+	const maxChars = preWrapCharCap(rows, width);
+	const preTruncated = trimmed.length > maxChars;
+	const forWrapping = preTruncated ? trimmed.slice(0, maxChars) : trimmed;
+
+	const { shown, remaining } = visualRowsHead(forWrapping, width, rows);
+
+	// CC terminal.ts:93-99 — when the input was pre-sliced the true remainder is
+	// unknown, so estimate it from raw length rather than wrapping the rest.
+	const estimated = preTruncated
+		? Math.max(remaining, Math.ceil(trimmed.length / width) - rows)
+		: remaining;
+
+	let out = shown.map((l) => styleLine(l === "" ? " " : l)).join("\n");
+	if (estimated > 0) {
+		// CC terminal.ts:103-108 — `… +N lines` + `(ctrl+o to expand)`. CC always
+		// pluralizes "lines" here; the hint is suppressed inside nested/virtual
+		// lists (CtrlOToExpand.tsx:34), mirrored by expandHint:false.
+		const hint = `… +${estimated} lines`;
+		const suffix = options.expandHint === false ? "" : ` ${italic("(ctrl+o to expand)")}`;
+		out += `\n${theme.fg("dim", hint)}${suffix}`;
+	}
+	return out;
+}
+
+/** Content width available to a result body: terminal width minus the `⎿  `
+ *  gutter. Render-time width is unknown when renderResult() builds the string,
+ *  so bodies that need it are built inside the component's render(width). */
+function resultContentWidth(width: number): number {
+	return Math.max(10, Math.floor(width) - RESULT_CONTENT_COL);
+}
+
+/**
+ * The streaming counterpart: CC ShellProgressMessage.tsx:44,83 tails the last
+ * `rows` and clips with `<Box height={rows} overflow="hidden">`. Same visual-row
+ * budget as the completed path, opposite direction, no expand hint (the result
+ * is not final yet).
+ */
+function tailVisualRows(lines: string[], wrapWidth: number, rows: number, styleLine: (line: string) => string): string {
+	const width = Math.max(1, Math.floor(wrapWidth));
+	// Only the last `rows` logical lines can contribute, and each contributes at
+	// most `rows` visual rows — so cap the input the same way the head path does
+	// instead of wrapping a 50KB minified line to find its tail.
+	const candidates = lines.slice(-rows);
+	const out: string[] = [];
+	// Walk backwards, prepending, so `out` stays in display order throughout.
+	for (let i = candidates.length - 1; i >= 0 && out.length < rows; i--) {
+		const line = candidates[i]!;
+		const lineWidth = visibleWidth(line);
+		if (lineWidth <= width) {
+			out.unshift(line);
+			continue;
+		}
+		// Take this line's LAST chunks (its visual tail), on the same chunk
+		// boundaries the head path uses, and prepend them in order.
+		const chunkCount = Math.ceil(lineWidth / width);
+		const need = rows - out.length;
+		const firstChunk = Math.max(0, chunkCount - need);
+		const chunks: string[] = [];
+		for (let ci = firstChunk; ci < chunkCount; ci++) {
+			// 3rd arg is a length, not an end column (pi-tui utils.d.ts:78).
+			chunks.push(sliceByColumn(line, ci * width, width));
+		}
+		out.unshift(...chunks);
+	}
+	return out
+		.slice(-rows)
+		.map((l) => styleLine(l === "" ? " " : l))
+		.join("\n");
+}
+
 function collectNonEmptyLines(text: string, tailLimit?: number): { lines: string[]; total: number } {
 	const keepTail = typeof tailLimit === "number";
 	const limit = keepTail ? Math.max(0, Math.floor(tailLimit)) : 0;
@@ -445,6 +615,61 @@ function cachedText(last: unknown, text: string): CachedTextComponent {
 	return t;
 }
 
+/**
+ * A result body whose preview budget depends on the render width, so the text
+ * can only be built inside render(width) (CC reads `useTerminalSize().columns`
+ * for the same reason, OutputLine.tsx:56).
+ *
+ * `build(contentWidth)` returns the un-prefixed body; this component adds the
+ * `⎿  ` lead + 5-column hanging indent and caches per width.
+ */
+class WidthBudgetedBodyComponent implements Component {
+	private build: (contentWidth: number) => string = () => "";
+	private lead = RESULT_LEAD;
+	private key = "";
+	private cachedWidth = -1;
+	private cachedLines: string[] | undefined;
+	/** `key` identifies the inputs (including the theme-resolved lead); when it
+	 *  is unchanged the per-width cache survives the re-render. */
+	setBuild(key: string, lead: string, build: (contentWidth: number) => string): void {
+		this.build = build;
+		this.lead = lead;
+		if (this.key === key) return;
+		this.key = key;
+		this.invalidate();
+	}
+	render(width: number): string[] {
+		if (this.cachedLines && this.cachedWidth === width) return this.cachedLines;
+		const body = this.build(resultContentWidth(width));
+		// The body is already within budget; wrapResultBody only applies the gutter
+		// and enforces Component.render()'s width contract.
+		const lines = body === "" ? [] : wrapResultBody(`${this.lead}${indentResultBody(body)}`, width, RESULT_CONTENT_COL);
+		this.cachedWidth = width;
+		this.cachedLines = lines;
+		return lines;
+	}
+	invalidate(): void {
+		this.cachedWidth = -1;
+		this.cachedLines = undefined;
+	}
+}
+
+function widthBudgetedBody(
+	last: unknown,
+	theme: Theme,
+	key: string,
+	build: (contentWidth: number) => string,
+): WidthBudgetedBodyComponent {
+	// Same instanceof guard as cachedText (AUDIT §2 P0-4): ctrl+o can swap the
+	// component type between renders, and .setBuild on a foreign object throws.
+	const c = last instanceof WidthBudgetedBodyComponent ? last : new WidthBudgetedBodyComponent();
+	const lead = theme.fg("dim", RESULT_LEAD);
+	// The theme name is part of the cache key so a live theme switch repaints
+	// (palette-b6 live-theme contract) instead of serving stale colors.
+	c.setBuild(`${theme.name}\u0000${key}`, lead, build);
+	return c;
+}
+
 // ---------------------------------------------------------------------------
 // Live preview state (bash streaming)
 // ---------------------------------------------------------------------------
@@ -470,45 +695,6 @@ function liveLineCountTrailing(ctx: RenderContext, theme: Theme): string {
 }
 
 // ---------------------------------------------------------------------------
-// Preview text builder
-// ---------------------------------------------------------------------------
-
-function buildPreviewText(
-	lines: string[],
-	theme: Theme,
-	limit: number,
-	total: number,
-	styleLine: (line: string) => string,
-): string {
-	const shown = lines.slice(0, limit);
-	const remaining = total - shown.length;
-	let text = shown.map((l) => styleLine(l || " ")).join("\n");
-	if (remaining > 0) {
-		// AUDIT §5:315 — pluralize: "1 more line", not "1 more lines".
-		text += `\n${theme.fg("muted", `... (${remaining} more line${remaining === 1 ? "" : "s"})`)}`;
-	}
-	return text;
-}
-
-/** Tail preview with `... (N earlier lines)` prefix (old ext live preview). */
-function buildTailPreview(
-	lines: string[],
-	total: number,
-	theme: Theme,
-	limit: number,
-	styleLine: (line: string) => string,
-): string {
-	const tail = lines.length > limit ? lines.slice(-limit) : lines;
-	const earlier = total - tail.length;
-	let text = tail.map((l) => styleLine(l || " ")).join("\n");
-	if (earlier > 0) {
-		// AUDIT §5:315 — pluralize: "1 earlier line", not "1 earlier lines".
-		text = `${theme.fg("muted", `... (${earlier} earlier line${earlier === 1 ? "" : "s"})`)}\n${text}`;
-	}
-	return text;
-}
-
-// ---------------------------------------------------------------------------
 // Group-aware render slots
 // ---------------------------------------------------------------------------
 
@@ -530,17 +716,53 @@ function displayPathFor(ctx: RenderContext): (p: string) => string {
 	return (p: string) => shortPath(ctx.cwd, p);
 }
 
+/**
+ * The ctrl+o-expanded body shared by read/grep/find/ls: a stat line plus the
+ * result rows, budgeted in VISUAL rows at render width.
+ *
+ * These are already the expanded view, so the row ceiling is MAX_RENDER_LINES
+ * rather than previewLimit(), and the `(ctrl+o to expand)` hint is suppressed —
+ * ctrl+o is what got us here. Without a ceiling a single minified row expanded
+ * to ~212 rendered rows per line.
+ */
+function expandedStatBody(
+	ctx: RenderContext,
+	theme: Theme,
+	key: string,
+	stat: string,
+	lines: string[],
+): Component {
+	const joined = lines.join("\n");
+	return widthBudgetedBody(ctx.lastComponent, theme, `${key}\u0000${joined.length}\u0000${joined.slice(0, 4096)}`, (contentWidth) => {
+		const body = renderTruncatedContent(joined, contentWidth, MAX_RENDER_LINES, theme, (l) => theme.fg("dim", l), {
+			expandHint: false,
+		});
+		return body === "" ? stat : `${stat}\n${body}`;
+	});
+}
+
 /** The per-member result line for an expanded group's glance preview. */
 function groupMemberPreview(m: { status: string; result: unknown }, theme: Theme): string {
 	if (m.status === "pending") return theme.fg("dim", "…");
 	const out = resultText(m.result);
 	if (!out) return "";
-	// collectNonEmptyLines(…, tailLimit) keeps the LAST N lines; render them
-	// with the tail wording ("N earlier lines" above) — the old buildPreviewText
-	// call captioned the same tail window as "front N + N more lines"
-	// (AUDIT §5:388).
+	// Head-first, same direction as the standalone completed result (CC routes
+	// both through OutputLine → renderTruncatedContent). The group body is a
+	// nested list, so the ctrl+o hint is suppressed — CC CtrlOToExpand.tsx:34
+	// returns null inside a sub-agent / virtual list.
+	//
+	// This path renders to a plain string (the group leader composes one block),
+	// so the render width is unavailable. Budget against a nominal width, which
+	// bounds a minified line to a few wrapped rows instead of hundreds.
 	const collected = collectNonEmptyLines(out, previewLimit());
-	return buildTailPreview(collected.lines, collected.total, theme, previewLimit(), (l) => theme.fg("dim", l));
+	return renderTruncatedContent(
+		collected.lines.join("\n"),
+		GROUP_PREVIEW_NOMINAL_WIDTH,
+		previewLimit(),
+		theme,
+		(l) => theme.fg("dim", l),
+		{ expandHint: false },
+	);
 }
 
 function renderGroupCall(toolCallId: string, theme: Theme, ctx: RenderContext): string | undefined {
@@ -645,8 +867,7 @@ export function registerBuiltins(pi: ExtensionAPI): void {
 			if (details?.truncation?.truncated) text += theme.fg("warning", " (truncated)");
 			if (!expanded) return cachedText(c.lastComponent, withResultLead(theme, text));
 			const lines = visibleContent.split("\n");
-			const preview = buildPreviewText(lines, theme, previewLimit(), lines.length, (l) => theme.fg("dim", l));
-			return cachedText(c.lastComponent, leadBody(theme, `${text}\n${preview}`));
+			return expandedStatBody(c, theme, `read\u0000${text}`, text, lines);
 		},
 	});
 
@@ -681,17 +902,24 @@ export function registerBuiltins(pi: ExtensionAPI): void {
 			if (grouped !== undefined) return cachedText(c.lastComponent, grouped);
 			const output = resultText(result);
 
-			// Live preview while streaming: tail N lines + earlier-lines prefix.
+			// Live preview while streaming: CC ShellProgressMessage.tsx:44,83 keeps a
+			// fixed 5-row TAIL window (`lines.slice(-5)` in a height-5 clipped Box) —
+			// tailing is the point while output is still arriving. Only the completed
+			// view flips to head-first.
 			if (isPartial) {
-				const collected = collectNonEmptyLines(output, previewLimit());
+				const collected = collectNonEmptyLines(output, STREAM_PREVIEW_ROWS);
 				setLiveLineCount(c, collected.total);
 				if (collected.total === 0) {
 					return cachedText(c.lastComponent, withResultLead(theme, theme.fg("dim", "Running…")));
 				}
-				const body = buildTailPreview(collected.lines, collected.total, theme, previewLimit(), (l) =>
-					theme.fg("dim", l),
-				);
-				return cachedText(c.lastComponent, leadBody(theme, `${theme.fg("dim", "Running…")}\n${body}`));
+				// Budget the tail in VISUAL rows too: 5 logical lines of minified output
+				// is still hundreds of rows. Built at render time — the row budget needs
+				// the width.
+				const key = `stream\u0000${collected.total}\u0000${collected.lines.join("\n")}`;
+				return widthBudgetedBody(c.lastComponent, theme, key, (contentWidth) => {
+					const tail = tailVisualRows(collected.lines, contentWidth, STREAM_PREVIEW_ROWS, (l) => theme.fg("dim", l));
+					return `${theme.fg("dim", "Running…")}\n${tail}`;
+				});
 			}
 
 			// Completed.
@@ -718,30 +946,30 @@ export function registerBuiltins(pi: ExtensionAPI): void {
 					: theme.fg("dim", "(No output)");
 				return cachedText(c.lastComponent, withResultLead(theme, status));
 			}
-			if (failed) {
-				const status = theme.fg("error", exitCode !== null ? `Exit ${exitCode}` : "Error");
-				const body = buildTailPreview(collected.lines, collected.total, theme, previewLimit(), (l) =>
+
+			// Completed with output — CC OutputLine.tsx:73 → renderTruncatedContent:
+			// head-first visual rows + `… +N lines (ctrl+o to expand)`. Expanded skips
+			// truncation entirely (CC `shouldShowFull`, OutputLine.tsx:70).
+			const status = failed ? theme.fg("error", exitCode !== null ? `Exit ${exitCode}` : "Error") : "";
+			if (expanded) {
+				// pi already caps bash stdout at 2000 lines / 50KB (truncate.js), but a
+				// minified line still wraps to hundreds of rows, so the expanded view
+				// keeps a generous ceiling instead of no ceiling at all.
+				const key = `expanded\u0000${failed}\u0000${exitCode}\u0000${output}`;
+				return widthBudgetedBody(c.lastComponent, theme, key, (contentWidth) => {
+					const body = renderTruncatedContent(collected.lines.join("\n"), contentWidth, MAX_RENDER_LINES, theme, (l) => l, {
+						expandHint: false,
+					});
+					return status ? `${status}\n${body}` : body;
+				});
+			}
+			const key = `collapsed\u0000${failed}\u0000${exitCode}\u0000${previewLimit()}\u0000${output}`;
+			return widthBudgetedBody(c.lastComponent, theme, key, (contentWidth) => {
+				const body = renderTruncatedContent(collected.lines.join("\n"), contentWidth, previewLimit(), theme, (l) =>
 					theme.fg("dim", l),
 				);
-				return cachedText(c.lastComponent, leadBody(theme, `${status}\n${body}`));
-			}
-
-			// Success with output: no status line, output only.
-			if (!expanded) {
-				const body = buildTailPreview(collected.lines, collected.total, theme, previewLimit(), (l) =>
-					theme.fg("dim", l),
-				);
-				return cachedText(c.lastComponent, leadBody(theme, body));
-			}
-
-			// Expanded: full output (CC ctrl+o expands to the whole result, not a
-			// different 8-line window). previewLimit() would take the FIRST 8 lines
-			// while the collapsed view shows the LAST 8 — swapping windows, not
-			// expanding (AUDIT §5:531). pi already caps bash stdout at 2000 lines
-			// (truncate.js), so rendering all collected lines is bounded. Merged
-			// stdout+stderr → default color (CC's red-stderr split is unavailable).
-			const body = buildPreviewText(collected.lines, theme, collected.lines.length, collected.total, (l) => l);
-			return cachedText(c.lastComponent, leadBody(theme, body));
+				return status ? `${status}\n${body}` : body;
+			});
 		},
 	});
 
@@ -787,8 +1015,7 @@ export function registerBuiltins(pi: ExtensionAPI): void {
 			const files = countGrepFiles(matches);
 			const stat = `Found ${theme.bold(String(files))} ${files === 1 ? "file" : "files"}`;
 			if (!expanded) return cachedText(c.lastComponent, withResultLead(theme, stat));
-			const body = buildPreviewText(matches, theme, previewLimit(), matches.length, (l) => theme.fg("dim", l));
-			return cachedText(c.lastComponent, leadBody(theme, `${stat}\n${body}`));
+			return expandedStatBody(c, theme, `grep\u0000${stat}`, stat, matches);
 		},
 	});
 
@@ -830,8 +1057,7 @@ export function registerBuiltins(pi: ExtensionAPI): void {
 			const items = raw.split("\n").filter((l) => l.trim().length > 0);
 			const stat = `${theme.bold(String(items.length))} ${items.length === 1 ? "file" : "files"}`;
 			if (!expanded) return cachedText(c.lastComponent, withResultLead(theme, stat));
-			const body = buildPreviewText(items, theme, previewLimit(), items.length, (l) => theme.fg("dim", l));
-			return cachedText(c.lastComponent, leadBody(theme, `${stat}\n${body}`));
+			return expandedStatBody(c, theme, `find\u0000${stat}`, stat, items);
 		},
 	});
 
@@ -872,8 +1098,7 @@ export function registerBuiltins(pi: ExtensionAPI): void {
 			const items = raw.split("\n").filter((l) => l.trim().length > 0);
 			const stat = `${theme.bold(String(items.length))} ${items.length === 1 ? "entry" : "entries"}`;
 			if (!expanded) return cachedText(c.lastComponent, withResultLead(theme, stat));
-			const body = buildPreviewText(items, theme, previewLimit(), items.length, (l) => theme.fg("dim", l));
-			return cachedText(c.lastComponent, leadBody(theme, `${stat}\n${body}`));
+			return expandedStatBody(c, theme, `ls\u0000${stat}`, stat, items);
 		},
 	});
 

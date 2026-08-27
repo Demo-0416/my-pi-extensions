@@ -104,10 +104,16 @@ write 新文件的结果行 Ctrl+O 展开（变成 `DiffCardComponent`）再收�
 **已排除的嫌疑**（有实测数据）：
 
 - bash 巨量输出 —— pi 层已截断到 50KB/2000 行，全速压测 73 秒峰值只到 142MB。
+  —— 补充（后来的发现）：峰值安全取决于输出的**形状**而不只是大小。同样 50KB，
+  2000 短行只渲染 9 行；2 个 minified 长行（`grep -rn` 打到 bundle）渲染 654 行、
+  heapΔ 27.9MB。因为旧预览预算数的是逻辑行。已按 CC `terminal.ts:71` 改成视觉行
+  预算 + 折行前预截断（见 §6 P1 已修条目）。
 - `renderShell: "self"` 绕过 pi 截断 —— 它只是外框样式开关，不改数据流。
 - pi 裸跑 OOM —— pi 默认 bash 渲染器比扩展重 70 倍，两者都内存稳定。
 
-**pi 侧的结构性隐患**（不是本次元凶，但值得知道）：`pi-tui/dist/utils.js:869` 的 `breakLongWord` 为超长行的**每个字符**物化一个 `{type,value}` 对象，实测 100~130 字节堆/输入字符 —— 约 30MB 的单行就能打满 4GB。`utils.js:245` 的 `widthCache` 只限 512 条不限字节，512 × 2MB 键 = 976MB 常驻。给 pi 提 issue 的材料。
+**pi 侧的结构性隐患**（不是本次元凶，也**够不着**，别照这条去提 issue）：`pi-tui/dist/utils.js:869` 的 `breakLongWord` 为超长行的**每个字符**物化一个 `{type,value}` 对象，实测 100~130 字节堆/输入字符 —— 理论上约 30MB 的单行就能打满 4GB。`utils.js:245` 的 `widthCache` 只限 512 条不限字节。
+
+但**触发不了**：pi 的工具层把 bash stdout 卡在 50KB（`core/tools/truncate.js:10-11`），要递 30MB 单行进去没有路径。实测 50KB 单行走 pi 自己的 `truncateToVisualLines` 是 9ms / 内部折 500 个视觉行（只显示最后 5 行）—— 浪费但可控。除非哪天发现一条不设上限的内容路径，否则这条不构成 pi 的 bug。
 
 ---
 
@@ -423,8 +429,8 @@ agent_end
 | 级别 | 可行性 | 工作量 | 差距 |
 |---|---|---|---|
 | P1 | 可做 | S | 编辑工具行头 CC 叫 Update/Create，pi 叫 Edit |
-| P1 | 可做 | M | bash 结果预览方向与配色反了：CC 是折行后前 3 行、默认色、尾部 `… +N lines (ctrl+o to expand)` |
-| P1 | 可做 | S | ctrl+o 展开后 read/bash/grep/find/ls 仍然只给 8 行 |
+| ~~P1~~ 已修 | 可做 | M | ~~bash 结果预览方向与配色反了：CC 是折行后前 3 行、默认色、尾部 `… +N lines (ctrl+o to expand)`~~ → 已按 CC `src/utils/terminal.ts:71 renderTruncatedContent` 重写：视觉行预算 + 头部优先 + `… +N lines (ctrl+o to expand)`。折叠行数保留 8（非 CC 的 3），流式态按 CC `ShellProgressMessage.tsx:44` 保留 5 行尾窗 |
+| ~~P1~~ 已修 | 可做 | S | ~~ctrl+o 展开后 read/bash/grep/find/ls 仍然只给 8 行~~ → 展开态改走 MAX_RENDER_LINES(150) 视觉行上限，不再是另一个 8 行窗口 |
 | P1 | 可做 | S | MCP 行没有 `⎿` 结果 gutter，行头参数也没有 () 包裹 |
 | P2 | 可做 | S | MCP 工具名丢了 `server - … (MCP)` 结构，且去前缀正则对含下划线的 server 名失效 |
 | P2 | 可做 | S | MCP 行头参数摘要的分隔符/取值/截断参数都和 CC 不同 |

@@ -72,16 +72,36 @@ test("bash：isError 时从 pi 的状态行取 exit code（§5:499）", async ()
 	assert.match(out, /Exit 2/, `失败态应显示 Exit 2，实际:\n${out}`);
 });
 
-test("预览省略提示单复数（§5:315）", async () => {
+test("溢出提示对齐 CC：剩 1 行直接显示，不花一行去说「+1 lines」（CC terminal.ts:44-53）", async () => {
 	const pi = await loadExtension();
 	const grep = pi.tools.get("grep")!;
 	const theme = new FakeTheme();
-	// 9 行匹配、previewLimit=8 → 恰好剩 1 行。
+	// 旧契约是「前 8 行 + `... (1 more line)`」；现在对齐 CC：预算按视觉行，
+	// 且只剩 1 行时直接多显一行（花一行去写提示不划算）。
 	const lines = Array.from({ length: 9 }, (_, i) => `f.ts:${i + 1}: m${i}`);
 	const { ctx } = makeToolCtx({ args: { pattern: "m" }, expanded: true });
 	const out = plainText(grep.renderResult(textResult(lines.join("\n")), { expanded: true, isPartial: false }, theme, ctx));
-	assert.match(out, /1 more line\)/, `剩 1 行应为单数，实际:\n${out}`);
-	assert.doesNotMatch(out, /1 more lines/, "不应出现 1 more lines");
+	for (const l of lines) {
+		assert.match(out, new RegExp(l.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")), `剩 1 行时应全部显示，缺 ${l}:\n${out}`);
+	}
+	assert.doesNotMatch(out, /\+1 lines/, `剩 1 行不应出现 … +1 lines 提示:\n${out}`);
+});
+
+test("溢出提示文案对齐 CC：… +N lines (ctrl+o to expand)（CC terminal.ts:103-108）", async () => {
+	const pi = await loadExtension();
+	const bash = pi.tools.get("bash")!;
+	const theme = new FakeTheme();
+	// 远超预算的行数（previewLimit=8），必定截断。
+	const lines = Array.from({ length: 40 }, (_, i) => `line ${i}`);
+	const { ctx } = makeToolCtx({ args: { command: "seq 40" }, expanded: false });
+	const out = plainText(bash.renderResult(textResult(lines.join("\n")), { expanded: false, isPartial: false }, theme, ctx));
+	// CC 方向：头部优先（第 0 行在，最后一行不在）。
+	assert.match(out, /line 0/, `应从头部开始显示:\n${out}`);
+	assert.doesNotMatch(out, /line 39/, `不应再是尾部窗口:\n${out}`);
+	// CC 文案：… +N lines，并带 ctrl+o 提示。
+	assert.match(out, /… \+\d+ lines/, `应用 CC 的 … +N lines 文案:\n${out}`);
+	assert.match(out, /ctrl\+o to expand/, `应带 ctrl+o 提示:\n${out}`);
+	assert.doesNotMatch(out, /earlier line/, `不应再有旧的 earlier lines 文案:\n${out}`);
 });
 
 test("进行中占位文案用 …（§5:426）", async () => {

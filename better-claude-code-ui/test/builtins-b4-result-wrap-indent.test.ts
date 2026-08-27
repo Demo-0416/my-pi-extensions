@@ -3,14 +3,18 @@
  *
  * 修复前：结果体交给 pi-tui Text(paddingX=0) 渲染，长逻辑行按词换行时续行
  * 掉回第 0 列，破坏 `⎿  ` 5 列悬挂缩进。修复后 CachedTextComponent 自己做
- * 宽度感知换行：固定 5 列 gutter，词换行续行重新缩进到第 5 列。
+ * 宽度感知换行：固定 5 列 gutter，续行重新缩进到第 5 列。
+ *
+ * 注：结果体的折行改为对齐 CC（terminal.ts:19-60 wrapText）——按列硬切而非
+ * 按词换行，所以一条续行的内容本身可以以空格起头（CC 只 trimEnd）。断言因此
+ * 检查「gutter 恰好 5 列」，不再要求第 5 列必须是非空白字符。
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { FakePi, FakeTheme, loadExtension, makeToolCtx } from "./harness.js";
 import { plain, renderLines, width } from "./helpers.js";
 
-test("单行超长结果：词换行续行缩进到第 5 列，不掉回第 0 列", async () => {
+test("单行超长结果：续行缩进到第 5 列，不掉回第 0 列", async () => {
 	const pi = await loadExtension();
 	const bash = pi.tools.get("bash")!;
 	const theme = new FakeTheme();
@@ -26,11 +30,17 @@ test("单行超长结果：词换行续行缩进到第 5 列，不掉回第 0 �
 	);
 	const lines = plain(comp, 40);
 	assert.ok(lines.length >= 2, `应换成多行，实际 ${lines.length} 行:\n${lines.join("\n")}`);
-	// 第 0 行是 `  ⎿  <content>`；后续续行必须以 5 个空格开头。
+	// 第 0 行是 `  ⎿  <content>`；后续续行 gutter 恰好 5 列（第 6 列起是内容，
+	// 按列硬切时内容首字符可能是空格，不做非空白断言）。
 	assert.match(lines[0]!, /^ {2}⎿ {2}\S/, `首行应带 ⎿ lead:\n${lines[0]}`);
 	for (let i = 1; i < lines.length; i++) {
-		assert.match(lines[i]!, /^ {5}\S/, `续行 ${i} 应缩进到第 5 列:\n[${lines[i]}]`);
+		assert.match(lines[i]!, /^ {5}/, `续行 ${i} 应缩进到第 5 列:\n[${lines[i]}]`);
+		assert.doesNotMatch(lines[i]!, /^ {6,}\S*$/, `续行 ${i} 不应整体多缩进:\n[${lines[i]}]`);
+		assert.ok(width(lines[i]!) <= 40, `续行 ${i} 宽 ${width(lines[i]!)} 超过 40:\n[${lines[i]}]`);
 	}
+	// 同一份内容不得出现重复行（sliceByColumn 第 3 参是长度而非结束列，
+	// 传错会让每个 chunk 越来越宽并重复尾部）。
+	assert.equal(new Set(lines).size, lines.length, `不应有重复行:\n${lines.join("\n")}`);
 });
 
 test("多行结果里的长行：每条逻辑行的续行都缩进到第 5 列", async () => {
