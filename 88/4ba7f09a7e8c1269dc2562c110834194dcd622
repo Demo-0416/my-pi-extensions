@@ -1,0 +1,46 @@
+better-claude-code-ui/test/builtins-r1-remaining.test.ts
+  s_ac2c6c9eada267::t_9c8eea50b7b6f2 75,79-80,84-104
+better-claude-code-ui/AUDIT.md
+  s_ac2c6c9eada267::t_0df2d43788fc02 107-110,115
+  s_ac2c6c9eada267::t_d1f3cdd633bb64 114,116
+  s_ac2c6c9eada267::t_24632d9d055e9a 432-433
+better-claude-code-ui/ALIGNMENT.md
+  s_ac2c6c9eada267::t_d7a21c6a841775 68-69
+better-claude-code-ui/test/builtins-b4-result-wrap-indent.test.ts
+  s_ac2c6c9eada267::t_cd8b510110b494 6-10,17,33-34,37-39,41-43
+better-claude-code-ui/extension/tools/builtins.ts
+  s_ac2c6c9eada267::t_e9547e7c00fd07 870,1018,1060,1101
+  s_ac2c6c9eada267::t_0fde8b253aede4 101-106,312-333,341-354,356-357,361,363-424
+  s_ac2c6c9eada267::t_d62e8f8a01c9c9 358-360,455-456
+  s_ac2c6c9eada267::t_236561b5d47e66 905-908,910,915-922,950-968,971-972
+  s_ac2c6c9eada267::t_156311b3442853 334-340,355,362
+  s_ac2c6c9eada267::t_be76a97ee7dbb7 628,632-634,636-638,646,657-662,666-669
+  s_ac2c6c9eada267::t_4ece69e1b4e7ee 107-111
+  s_ac2c6c9eada267::t_39952ee590db8d 425,719-743
+  s_ac2c6c9eada267::t_1aab46b9a2439b 16-20
+  s_ac2c6c9eada267::t_018269a2161b91 427-439,441-447,450-451,457,459-465
+  s_ac2c6c9eada267::t_3350927a555c60 618-627,629-631,635,639-645,647-656,663-665,670-672
+  s_ac2c6c9eada267::t_b81b1fd0a6567a 749-756,758-765
+  s_ac2c6c9eada267::t_7889e821183e63 440,448-449,452-454,458
+  s_ac2c6c9eada267::t_743202d5f92d96 426
+better-claude-code-ui/test/builtins-cc-visual-row-budget.test.ts
+  s_ac2c6c9eada267::t_e4b6bd6deb4e6a 1-124
+better-claude-code-ui/test/builtins-cc-preview-ansi.test.ts
+  s_ac2c6c9eada267::t_1a9fe2bc8e70c5 1-39
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.24",
+  "base_commit_sha": "884ba7f09a7e8c1269dc2562c110834194dcd622",
+  "prompts": {},
+  "sessions": {
+    "s_ac2c6c9eada267": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a04157-7142-77fa-a2f2-729467759994",
+        "model": "es1_orange_o50"
+      },
+      "human_author": "Demo-0416 <145474865+Demo-0416@users.noreply.github.com>"
+    }
+  }
+}
