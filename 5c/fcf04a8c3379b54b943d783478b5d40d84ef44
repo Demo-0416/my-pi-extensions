@@ -1,0 +1,19 @@
+better-claude-code-ui/test/host-patches-ghost-rows.test.ts
+  s_ac2c6c9eada267::t_d37d3799fdbda6 1-118
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.24",
+  "base_commit_sha": "5cfcf04a8c3379b54b943d783478b5d40d84ef44",
+  "prompts": {},
+  "sessions": {
+    "s_ac2c6c9eada267": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a04157-7142-77fa-a2f2-729467759994",
+        "model": "es1_orange_o50"
+      },
+      "human_author": "Demo-0416 <145474865+Demo-0416@users.noreply.github.com>"
+    }
+  }
+}
