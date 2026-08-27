@@ -14,6 +14,19 @@ Try it without installing:
 pi -e npm:better-claude-code-ui
 ```
 
+### Recommended setting
+
+This extension draws its own welcome banner, so pi's built-in startup header
+becomes redundant. Hide it in `~/.pi/agent/settings.json`:
+
+```json
+{ "quietStartup": true }
+```
+
+The full two-column banner (extensions + skills) appears the first time you
+open a given project, matching CC's `showOnboarding` behavior; later starts in
+that project use the condensed logo.
+
 ## What you get
 
 **6 themes** (`/themes` to switch, or use `/cc-theme` for a CC-only picker):
