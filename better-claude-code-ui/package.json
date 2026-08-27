@@ -1,6 +1,6 @@
 {
   "name": "better-claude-code-ui",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "description": "Claude Code visual identity for pi: 6 CC themes, welcome box, status line, CC spinner, turn footer, and CC-style tool rendering",
   "keywords": [
     "pi-package",
@@ -37,7 +37,7 @@
       "./theme"
     ],
     "video": "https://cdn.jsdelivr.net/gh/Demo-0416/my-pi-extensions@23ec214394e7afcc87251d3a38c29057a269ae06/better-claude-code-ui/media/cover.mp4",
-    "image": "https://cdn.jsdelivr.net/gh/Demo-0416/my-pi-extensions@23ec214394e7afcc87251d3a38c29057a269ae06/better-claude-code-ui/media/cover.png"
+    "image": "https://raw.githubusercontent.com/Demo-0416/my-pi-extensions/master/better-claude-code-ui/media/cover.png"
   },
   "type": "module"
 }
