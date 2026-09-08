@@ -38,7 +38,7 @@ that project use the condensed logo.
 **UI modules**:
 
 - **Welcome banner** — CC's condensed logo on startup, boxed banner for new versions / first run in a project
-- **Status line** — model, cwd (with `~` shortening), git branch
+- **Status line** — model, cwd (with `~` shortening), git branch, session-cumulative prompt-cache hit rate (`cache XX%`, shown only when the provider reports cache activity)
 - **Spinner** — CC's verb rotation with byline: elapsed time, token count, `esc to interrupt`
 - **Turn footer** — per-request cost/duration summary, matching CC v2.1.234 behavior
 - **Tool rendering** — CC-style tool rows (no background box), grouped consecutive calls with `⎿` continuation lines, CC-faithful diff rendering with syntax highlighting (shiki)

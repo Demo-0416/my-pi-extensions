@@ -1,5 +1,6 @@
 /**
- * CC status line: model / cwd / git branch / context% / cost, via setFooter.
+ * CC status line: model / cwd / git branch / context% / cache% / cost, via
+ * setFooter.
  * Fields mirror CC's StatusLine; colors stay on dim/muted theme tokens like
  * CC's dim status bar (warning only when the context is nearly exhausted).
  * Session totals (old ext "Total time · N turns" semantics): wall-clock since
@@ -26,7 +27,12 @@ export function tildeHome(cwd: string): string {
 
 // Loose type for the assistant message usage we sum (avoids a direct pi-ai dependency).
 interface AssistantUsage {
-	usage: { cost: { total: number } };
+	usage?: {
+		cost?: { total?: number };
+		input?: number;
+		cacheRead?: number;
+		cacheWrite?: number;
+	};
 }
 
 function formatTokens(n: number): string {
@@ -63,10 +69,21 @@ export function registerStatusLine(pi: ExtensionAPI): void {
 		// by tools/retries/compaction.
 		let cost = 0;
 		let turns = 0;
+		// Prompt-cache totals across the session: cacheRead is what the provider
+		// served from cache, the rest of the prompt (input + cacheWrite) is what
+		// was billed at the full rate. cacheTokens (cacheRead + cacheWrite) is the
+		// "provider reports cache support" signal — 0 for non-caching providers.
+		let cacheRead = 0;
+		let promptTokens = 0;
+		let cacheTokens = 0;
 		let earliestMs = Date.now();
 		for (const e of ctx.sessionManager.getBranch()) {
 			if (e.type === "message" && e.message.role === "assistant") {
-				cost += (e.message as unknown as AssistantUsage).usage.cost.total;
+				const u = (e.message as unknown as AssistantUsage).usage;
+				cost += u?.cost?.total ?? 0;
+				cacheRead += u?.cacheRead ?? 0;
+				promptTokens += (u?.input ?? 0) + (u?.cacheRead ?? 0) + (u?.cacheWrite ?? 0);
+				cacheTokens += (u?.cacheRead ?? 0) + (u?.cacheWrite ?? 0);
 			}
 			if (e.type === "message" && e.message.role === "user") {
 				turns += 1;
@@ -83,7 +100,11 @@ export function registerStatusLine(pi: ExtensionAPI): void {
 			// Optional-chain the whole path: a failure-path assistant message may
 			// carry no usage, and defensive handlers must not throw in the bus.
 			if (event.message?.role === "assistant") {
-				cost += (event.message as { usage?: { cost?: { total?: number } } }).usage?.cost?.total ?? 0;
+				const u = (event.message as unknown as AssistantUsage).usage;
+				cost += u?.cost?.total ?? 0;
+				cacheRead += u?.cacheRead ?? 0;
+				promptTokens += (u?.input ?? 0) + (u?.cacheRead ?? 0) + (u?.cacheWrite ?? 0);
+				cacheTokens += (u?.cacheRead ?? 0) + (u?.cacheWrite ?? 0);
 			} else if (event.message?.role === "user") {
 				turns += 1;
 			}
@@ -111,6 +132,12 @@ export function registerStatusLine(pi: ExtensionAPI): void {
 					if (tokens > 0) {
 						const ctxText = window > 0 ? `${pct}%` : formatTokens(tokens);
 						parts.push(warn ? theme.fg("warning", `ctx ${ctxText}`) : theme.fg("dim", `ctx ${ctxText}`));
+					}
+					// Cache hit rate across the session; shown only once the provider
+					// has reported cache activity (providers without prompt caching
+					// never emit cacheRead/cacheWrite, so the segment stays hidden).
+					if (cacheTokens > 0) {
+						parts.push(theme.fg("dim", `cache ${((cacheRead / promptTokens) * 100).toFixed(1)}%`));
 					}
 					if (cost > 0) parts.push(theme.fg("dim", `$${cost.toFixed(2)}`));
 					// Session totals (old ext: "Total time X · N turns"); hidden on a
