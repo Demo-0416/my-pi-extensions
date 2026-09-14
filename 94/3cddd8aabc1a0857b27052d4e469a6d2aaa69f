@@ -1,0 +1,27 @@
+better-claude-code-ui/extension/tools/diff.ts
+  s_5b63e751ccd824::t_c849ab5b7a0a4c 1068,1080-1084
+better-claude-code-ui/package.json
+  s_5b63e751ccd824::t_a821b854192200 3
+better-claude-code-ui/test/diff-card-narrow-width.test.ts
+  s_5b63e751ccd824::t_1cba85fe0c086d 1-77
+better-claude-code-ui/extension/tools/builtins.ts
+  s_5b63e751ccd824::t_c849ab5b7a0a4c 1287-1288,1298,1378-1379,1389
+better-claude-code-ui/package-lock.json
+  s_5b63e751ccd824::t_e43e7dcf2dfa45 3,9
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.24",
+  "base_commit_sha": "943cddd8aabc1a0857b27052d4e469a6d2aaa69f",
+  "prompts": {},
+  "sessions": {
+    "s_5b63e751ccd824": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a09ff5-d96a-7653-b6b3-9badb4115fe8",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "Demo-0416 <145474865+Demo-0416@users.noreply.github.com>"
+    }
+  }
+}
