@@ -1284,8 +1284,8 @@ export function registerBuiltins(pi: ExtensionAPI): void {
 			// not the closure capture: on theme change pi invalidates without
 			// re-running renderResult, so a captured palette would go stale.
 			const build = (width: number, pal: ResolvedPalette): string[] => {
-				const lead = withResultLead(theme, stat || "Written");
-				if (old === content) return [lead];
+				const lead = wrapResultBody(withResultLead(theme, stat || "Written"), width, RESULT_CONTENT_COL);
+				if (old === content) return lead;
 				const options = {
 					maxLines: expanded ? MAX_RENDER_LINES : MAX_PREVIEW_LINES,
 					language: lang,
@@ -1295,7 +1295,7 @@ export function registerBuiltins(pi: ExtensionAPI): void {
 				const body = shouldUseSplit(diff, bodyWidth)
 					? renderSplit(pal, diff, bodyWidth, options)
 					: renderUnified(pal, diff, bodyWidth, options);
-				return [lead, ...body.map((l) => `${RESULT_INDENT}${l}`)];
+				return [...lead, ...body.map((l) => `${RESULT_INDENT}${l}`)];
 			};
 			const last = c.lastComponent as DiffCardComponent | undefined;
 			if (last instanceof DiffCardComponent && last.diffKey === key) {
@@ -1375,8 +1375,8 @@ export function registerBuiltins(pi: ExtensionAPI): void {
 			// §5:942 — use the card-supplied active palette, not the closure capture
 			// (same rationale as the write card above).
 			const build = (width: number, pal: ResolvedPalette): string[] => {
-				const lead = withResultLead(theme, stat || "Applied");
-				if (diff.lines.length === 0) return [lead];
+				const lead = wrapResultBody(withResultLead(theme, stat || "Applied"), width, RESULT_CONTENT_COL);
+				if (diff.lines.length === 0) return lead;
 				const options = {
 					maxLines: expanded ? MAX_RENDER_LINES : MAX_PREVIEW_LINES,
 					language: lang,
@@ -1386,7 +1386,7 @@ export function registerBuiltins(pi: ExtensionAPI): void {
 				const body = shouldUseSplit(diff, bodyWidth)
 					? renderSplit(pal, diff, bodyWidth, options)
 					: renderUnified(pal, diff, bodyWidth, options);
-				return [lead, ...body.map((l) => `${RESULT_INDENT}${l}`)];
+				return [...lead, ...body.map((l) => `${RESULT_INDENT}${l}`)];
 			};
 			const last = c.lastComponent as DiffCardComponent | undefined;
 			if (last instanceof DiffCardComponent && last.diffKey === key) {

@@ -1065,7 +1065,7 @@ export class DiffCardComponent implements Component {
 		this.cache.clear();
 	}
 	render(width: number): string[] {
-		const w = Math.max(20, Math.floor(width));
+		const w = Math.max(0, Math.floor(width));
 		// A theme switch swaps the active palette without necessarily re-running
 		// renderResult (which would setBuild a fresh closure) — invalidate() alone
 		// only cleared the width cache, so the card kept re-serving rows in the
@@ -1077,7 +1077,11 @@ export class DiffCardComponent implements Component {
 		}
 		const hit = this.cache.get(w);
 		if (hit !== undefined) return hit;
-		const lines = this.buildFn(w, activeSgrPalette);
+		// The viewport can be narrower than the fixed diff gutter. Enforce the
+		// width contract on the complete rows, including caller-added prefixes.
+		const lines = this.buildFn(w, activeSgrPalette).map((line) =>
+			visibleWidth(line) <= w ? line : truncateToWidth(line, w, ""),
+		);
 		this.cache.set(w, lines);
 		// Width is part of the key, so a resize while the card is visible
 		// accumulates one render copy per distinct width; cap the variants.
