@@ -1,0 +1,39 @@
+name: pi-trace
+
+on:
+  pull_request:
+    paths:
+      - 'pi-trace/**'
+      - '.github/workflows/pi-trace.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'pi-trace/**'
+      - '.github/workflows/pi-trace.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: pi-trace/src/web/package-lock.json
+      - run: npm run build:web
+        working-directory: pi-trace
+      - run: npm test
+        working-directory: pi-trace
+      - run: npx playwright install --with-deps chromium
+        working-directory: pi-trace/src/web
+      - run: npm run test:e2e
+        working-directory: pi-trace
+      - run: git diff --exit-code -- src/web/dist
+        working-directory: pi-trace
+      - run: npm pack --dry-run --ignore-scripts
+        working-directory: pi-trace

@@ -6,7 +6,7 @@
  *   · 缓存命中 81% · 输入 244K tok · 输出 6K tok · $0.12
  * ```
  */
-import type { TraceSession, TraceUsage } from './model.ts';
+import type { TraceRecord } from './model.ts';
 
 export interface TraceStats {
   /** turn 数 */
@@ -15,79 +15,161 @@ export interface TraceStats {
   steps: number;
   /** Σ assistant.durationMs */
   llmMs: number;
-  /** Σ tool.durationMs */
+  /** tool span 并集的墙钟时长 */
   toolMs: number;
   /** Σ ttft / N（仅 rich；无样本为 null） */
   avgTtftMs: number | null;
-  /** Σ output / Σ (assistant.durationMs − ttftMs)，单位 tok/s */
+  /**
+   * 输出速率 tok/s。分子分母必须来自**同一批** assistant 记录：
+   * Σ output / Σ decodeMs，只统计「既有解码时长、又有 output token」的记录。
+   * 无合格样本为 null。
+   */
   tokPerSec: number | null;
+  /** tokPerSec 的样本数（合格 assistant 记录数），0 表示该指标不可得。 */
+  tokPerSecSamples: number;
   /** Σ cacheRead / Σ (input + cacheRead) */
   cacheHitRate: number | null;
   inputTokens: number;
   outputTokens: number;
   cacheReadTokens: number;
   cacheWriteTokens: number;
+  /** 工具嵌套 LLM 调用（subagent 等）的 output token，计入总量但**不进** tokPerSec。 */
+  nestedOutputTokens: number;
   /** Σ usage.costTotal */
   costTotal: number;
 }
 
-function usageOf(record: TraceSession['records'][number]): TraceUsage | undefined {
-  return record.usage;
+/**
+ * tps 单样本的最小解码时长（ms）。
+ *
+ * 时间戳精度是毫秒，极短 span 上 output/decodeMs 会被舍入误差放大成天文数字
+ * （例：200 token / 1ms = 200000 tok/s）。低于该阈值的记录不作为速率样本
+ * ——它的 token 同时从分子里剔除，保持分子分母同源。
+ */
+const MIN_DECODE_MS_FOR_RATE = 50;
+
+function validNonNegative(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0;
+}
+
+function nonNegativeOrZero(value: unknown): number {
+  return validNonNegative(value) ? value : 0;
+}
+
+/** Shared by the aggregate and the browser's per-request timing panel. */
+export function outputTokensPerSecond(output: number | null | undefined, durationMs: number | null): number | null {
+  if (!validNonNegative(output) || output === 0
+    || !validNonNegative(durationMs) || durationMs < MIN_DECODE_MS_FOR_RATE) return null;
+  const rate = output / (durationMs / 1000);
+  return Number.isFinite(rate) ? rate : null;
+}
+
+/**
+ * 一条 assistant 记录的「解码时长」：
+ * - rich（有 TTFT）：durationMs − ttftMs，即首 token 之后的纯生成时间
+ * - reconstructed（无 TTFT）：整段 durationMs（含排队/首包，速率偏保守）
+ * 时长缺失（请求进行中、或历史文件里拿不到完成时间）返回 null —— 该记录
+ * 既不贡献时间，它的 token 也不能进分子。
+ */
+function decodeMsOf(record: TraceRecord): number | null {
+  if (!validNonNegative(record.durationMs)) return null;
+  if (record.ttftMs !== null && record.ttftMs !== undefined) {
+    if (!validNonNegative(record.ttftMs) || record.ttftMs > record.durationMs) return null;
+    return record.durationMs - record.ttftMs;
+  }
+  return record.durationMs;
+}
+
+/**
+ * 工具总时长：取各 tool span 的**并集**而非简单累加。
+ * pi 并行工具模式下多个 tool 同时在跑，Σ durationMs 会把同一段墙钟时间
+ * 重复计几次，使「工具总时」轻松超过会话实际时长。
+ */
+function unionMs(spans: ReadonlyArray<readonly [number, number]>): number {
+  if (spans.length === 0) return 0;
+  const sorted = [...spans].sort((a, b) => a[0] - b[0]);
+  let total = 0;
+  let [start, cursor] = sorted[0]!;
+  for (const [from, to] of sorted.slice(1)) {
+    if (from > cursor) {
+      total += cursor - start;
+      start = from;
+      cursor = to;
+    } else if (to > cursor) {
+      cursor = to;
+    }
+  }
+  return total + (cursor - start);
 }
 
 /** 按 3.6 口径汇总整个会话。 */
-export function computeStats(session: TraceSession): TraceStats {
+export function computeStats(session: { records: readonly TraceRecord[]; turns?: readonly unknown[] }): TraceStats {
   const records = session.records;
   let llmMs = 0;
-  let toolMs = 0;
+  const toolSpans: Array<readonly [number, number]> = [];
   let ttftSum = 0;
   let ttftCount = 0;
-  let decodeMs = 0;
   let inputTokens = 0;
   let outputTokens = 0;
   let cacheReadTokens = 0;
   let cacheWriteTokens = 0;
+  let nestedOutputTokens = 0;
   let costTotal = 0;
+  // tps 的分子/分母成对累加，只收合格样本。
+  let rateTokens = 0;
+  let rateMs = 0;
+  let rateSamples = 0;
 
   for (const record of records) {
     if (record.kind === 'assistant') {
-      if (record.durationMs !== null) llmMs += record.durationMs;
-      if (record.ttftMs !== null && record.ttftMs !== undefined) {
+      llmMs += nonNegativeOrZero(record.durationMs);
+      if (validNonNegative(record.ttftMs) && validNonNegative(record.durationMs)
+        && record.ttftMs <= record.durationMs) {
         ttftSum += record.ttftMs;
         ttftCount += 1;
-        if (record.durationMs !== null) {
-          decodeMs += Math.max(0, record.durationMs - record.ttftMs);
-        }
-      } else if (record.durationMs !== null) {
-        // 无 TTFT 样本时，退化为整段时长都算解码（reconstructed 会话）。
-        decodeMs += record.durationMs;
       }
-    } else if (record.kind === 'tool' && record.durationMs !== null) {
-      toolMs += record.durationMs;
+      const decodeMs = decodeMsOf(record);
+      const output = record.usage?.output ?? 0;
+      // 成对入账：只有「解码时长可信 + 有 output」的记录才是速率样本。
+      // 失败/中断的请求（isError）时间真实但 token 不完整，整条剔除。
+      if (!record.isError && decodeMs !== null && outputTokensPerSecond(output, decodeMs) !== null) {
+        rateTokens += output;
+        rateMs += decodeMs;
+        rateSamples += 1;
+      }
+    } else if (record.kind === 'tool' && validNonNegative(record.startedAt)
+      && validNonNegative(record.durationMs)
+      && Number.isFinite(record.startedAt + record.durationMs)) {
+      toolSpans.push([record.startedAt, record.startedAt + record.durationMs]);
     }
-    const usage = usageOf(record);
-    if (usage !== undefined) {
-      inputTokens += usage.input;
-      outputTokens += usage.output;
-      cacheReadTokens += usage.cacheRead;
-      cacheWriteTokens += usage.cacheWrite;
-      costTotal += usage.costTotal;
+    const usage = record.usage;
+    if (usage !== undefined && (record.kind === 'assistant' || record.kind === 'tool')) {
+      inputTokens += nonNegativeOrZero(usage.input);
+      outputTokens += nonNegativeOrZero(usage.output);
+      cacheReadTokens += nonNegativeOrZero(usage.cacheRead);
+      cacheWriteTokens += nonNegativeOrZero(usage.cacheWrite);
+      costTotal += nonNegativeOrZero(usage.costTotal);
+      // 工具自带 usage = 它内部的嵌套 LLM 调用（subagent）。这些 token 不是
+      // 本会话主链路解码出来的，计入总量/费用，但绝不进 tps 分子。
+      if (record.kind === 'tool') nestedOutputTokens += nonNegativeOrZero(usage.output);
     }
   }
 
   const cacheDenom = inputTokens + cacheReadTokens;
   return {
-    turns: session.turns.length,
+    turns: session.turns?.length ?? new Set(records.filter(r => r.turn !== null).map(r => r.turn)).size,
     steps: records.length,
     llmMs,
-    toolMs,
+    toolMs: unionMs(toolSpans),
     avgTtftMs: ttftCount > 0 ? ttftSum / ttftCount : null,
-    tokPerSec: decodeMs > 0 && outputTokens > 0 ? outputTokens / (decodeMs / 1000) : null,
+    tokPerSec: outputTokensPerSecond(rateTokens, rateMs),
+    tokPerSecSamples: rateSamples,
     cacheHitRate: cacheDenom > 0 ? cacheReadTokens / cacheDenom : null,
     inputTokens,
     outputTokens,
     cacheReadTokens,
     cacheWriteTokens,
+    nestedOutputTokens,
     costTotal,
   };
 }

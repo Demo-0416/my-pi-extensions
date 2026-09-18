@@ -114,8 +114,8 @@ export default function (pi: ExtensionAPI): void {
     );
   });
 
-  pi.on('message_update', (_event, _ctx) => {
-    collector?.onMessageUpdate();
+  pi.on('message_update', (event, _ctx) => {
+    if (event.message.role === 'assistant') collector?.onMessageUpdate(event.assistantMessageEvent);
   });
 
   pi.on('message_end', (event, _ctx) => {
@@ -127,7 +127,7 @@ export default function (pi: ExtensionAPI): void {
   });
 
   pi.on('tool_result', (event, _ctx) => {
-    collector?.onToolResult(event.toolCallId, event.content, event.details, event.isError);
+    collector?.onToolResult(event.toolCallId, event.content, event.details, event.isError, event.usage);
   });
 
   pi.on('tool_execution_end', (event, ctx) => {

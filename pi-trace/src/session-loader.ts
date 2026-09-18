@@ -1,14 +1,14 @@
 /**
  * 历史会话回放（DESIGN.md 3.7）。
  *
- * 两级精度：sidecar 存在 = rich（精确时长/TTFT）；
- * 不存在 = 从 session JSONL 重建（timestamp 精确，duration 用相邻记录间隔推断，
- * TTFT 不可得显示 `—`），精度标记 `reconstructed`。
+ * 历史记录标记为 reconstructed；rich 时序仅保留在 live Collector 内存中。
  *
- * 重建启发式（无 sidecar 时）：
- * - user/assistant/toolResult 消息 → 对应记录，`startedAt = message.timestamp`
- * - `durationMs` = 下一条记录起点 − 本条起点（最后一条为 null）
- * - TTFT = null
+ * - assistant 时长估计 = entry.timestamp（持久化时刻）− message.timestamp
+ *   （provider 创建响应对象的时刻），包含请求等待和持久化前的处理开销。
+ * - tool 窗口估计 = toolResult.timestamp − 匹配 toolCallId 的 assistant 持久化时刻。
+ *   JSONL 不记录逐工具的执行起点，因此并行/串行批次的单条时长都不精确。
+ * - 缺失或无效的时长留 null，绝不使用相邻记录间隔（包含工具/用户空转时间）。
+ * - TTFT = null（前端显示 `—`）
  * - `model_change` entry → 记为 system 备注
  * - turn 切分：每条 assistant 消息开一个新 turn；其前的 user 消息归入该 turn；
  *   tool 记录归入调用它的 assistant 所在 turn（pi 语义：一个 turn = 一次 LLM 响应 + 其工具调用）
@@ -49,6 +49,7 @@ interface SessionMessage {
     output?: number;
     cacheRead?: number;
     cacheWrite?: number;
+    reasoning?: number;
     cost?: { total?: number };
   };
   stopReason?: string;
@@ -67,6 +68,15 @@ interface SessionEntry {
   modelId?: string;
   summary?: string;
   tokensBefore?: number;
+}
+
+/**
+ * 持久化时间用作响应结束时间的估计；可能包含队列/扩展处理开销，
+ * 不等于精确的最后 token 时间，但不会漏掉最后一条响应的全部时长。
+ */
+function entryEndMs(entry: SessionEntry): number | null {
+  const parsed = Date.parse(entry.timestamp);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
 }
 
 function textOf(content: string | ContentBlock[] | undefined): string {
@@ -117,6 +127,7 @@ function usageOf(message: SessionMessage): TraceUsage | undefined {
     cacheRead: usage.cacheRead ?? 0,
     cacheWrite: usage.cacheWrite ?? 0,
     costTotal: usage.cost?.total ?? 0,
+    ...(typeof usage.reasoning === 'number' ? { reasoning: usage.reasoning } : {}),
   };
 }
 
@@ -131,18 +142,23 @@ export function reconstructFromSessionFile(
   let header: SessionHeader | null = null;
   let sessionId = fallbackSessionId ?? 'unknown';
   const records: TraceRecord[] = [];
-  // toolCallId → args（assistant 消息的 toolCall 块），供 toolResult 记录补全 args。
-  const toolArgsById = new Map<string, Record<string, unknown>>();
+  // Match results to their issuing request, not simply the most recent assistant.
+  const toolCallsById = new Map<string, {
+    args?: Record<string, unknown>;
+    turn: number;
+    dispatchedAt: number | null;
+  }>();
   let seq = 0;
   let currentTurn = -1;
   let pendingUser: TraceRecord[] = [];
   let sourceLine = 0;
 
-  const push = (record: Omit<TraceRecord, 'id' | 'durationMs'>): TraceRecord => {
+  const push = (record: Omit<TraceRecord, 'id' | 'durationMs'>, durationMs: number | null = null): TraceRecord => {
     const full: TraceRecord = {
       ...record,
       id: `${sessionId}-r${seq++}`,
-      durationMs: null,
+      durationMs,
+      completed: true,
       ...(sourceLine > 0 ? { sourceLine } : {}),
     };
     records.push(full);
@@ -166,6 +182,7 @@ export function reconstructFromSessionFile(
     } catch {
       continue;
     }
+    if (typeof parsed !== 'object' || parsed === null) continue;
     const entry = parsed as SessionEntry;
     if (entry.type === 'session' && header === null) {
       header = entry as unknown as SessionHeader;
@@ -176,7 +193,10 @@ export function reconstructFromSessionFile(
     {
     if (entry.type === 'message' && entry.message) {
       const message = entry.message;
-      const startedAt = typeof message.timestamp === 'number' ? message.timestamp : Date.parse(entry.timestamp);
+      const messageMs = typeof message.timestamp === 'number' && Number.isFinite(message.timestamp)
+        && message.timestamp >= 0 ? message.timestamp : null;
+      const endMs = entryEndMs(entry);
+      const startedAt = messageMs ?? endMs ?? (Date.parse(header.timestamp) || 0);
       if (message.role === 'user') {
         const fullText = textOf(message.content);
         const record = push({
@@ -193,11 +213,12 @@ export function reconstructFromSessionFile(
         const turn = currentTurn;
         for (const record of pendingUser) record.turn = turn;
         pendingUser = [];
-        // 索引 toolCall 参数，供后续 toolResult 记录使用。
+        const llmMs = messageMs !== null && endMs !== null && endMs >= messageMs
+          ? endMs - messageMs : null;
         const blocks = Array.isArray(message.content) ? message.content : [];
         for (const block of blocks) {
-          if (block.type === 'toolCall' && block.id && block.arguments) {
-            toolArgsById.set(block.id, block.arguments);
+          if (block.type === 'toolCall' && block.id) {
+            toolCallsById.set(block.id, { args: block.arguments, turn, dispatchedAt: endMs });
           }
         }
         const fullText = textOf(message.content);
@@ -209,27 +230,32 @@ export function reconstructFromSessionFile(
           fullText: fullText || undefined,
           thinking: thinkingOf(message.content),
           toolCalls: toolCallsOf(message.content),
-          isError: message.stopReason === 'error',
+          isError: message.stopReason === 'error' || message.stopReason === 'aborted',
           model: message.model,
           provider: message.provider,
           usage: usageOf(message),
           ttftMs: null,
-        });
+        }, llmMs);
       } else if (message.role === 'toolResult') {
-        const turn = currentTurn < 0 ? null : currentTurn;
-        const args = message.toolCallId ? toolArgsById.get(message.toolCallId) : undefined;
+        const call = message.toolCallId ? toolCallsById.get(message.toolCallId) : undefined;
+        const turn = call?.turn ?? null;
+        const args = call?.args;
+        // This is a dispatch-to-result window, not an exact per-tool execution span.
+        const dispatchedAt = call?.dispatchedAt !== null && call?.dispatchedAt !== undefined
+          && messageMs !== null && call.dispatchedAt <= messageMs ? call.dispatchedAt : null;
         push({
           kind: 'tool',
           turn,
-          startedAt,
+          startedAt: dispatchedAt ?? startedAt,
           text: `${message.toolName ?? 'tool'} ${oneLine(JSON.stringify(args ?? {}), 120)}`,
           isError: message.isError === true,
           toolName: message.toolName,
           callId: message.toolCallId,
           args: truncateField(args),
           result: truncateField(textOf(message.content)),
+          usage: usageOf(message),
           exitCode: message.details?.exitCode,
-        });
+        }, dispatchedAt !== null ? startedAt - dispatchedAt : null);
       }
       continue;
     }
@@ -258,13 +284,7 @@ export function reconstructFromSessionFile(
   // 悬挂的 user 消息（无后续 assistant）归入最后一个 turn 之后的 null 区。
   for (const record of pendingUser) record.turn = null;
 
-  // durationMs = 下一条记录起点 − 本条起点（最后一条为 null）。
-  for (const [index, record] of records.entries()) {
-    const next = records[index + 1];
-    if (next !== undefined) {
-      record.durationMs = Math.max(0, next.startedAt - record.startedAt);
-    }
-  }
+  if (header === null) return null;
 
   const startedAt = Date.parse(header.timestamp) || records[0]?.startedAt || Date.now();
   const last = records[records.length - 1];
