@@ -44,7 +44,11 @@ pi 扩展：模仿 Claude Code 的 `/copy`，支持智能切段（代码块、Ma
 
 ## 安装
 
-扩展目录 `npm install` 后，在 `~/.pi/agent/settings.json` 的 `extensions` 数组加入本目录的绝对路径：
+```bash
+pi install npm:@demo-0416/smart-copy
+```
+
+本地开发：在扩展目录 `npm install` 后，在 `~/.pi/agent/settings.json` 的 `extensions` 数组加入本目录的绝对路径：
 
 ```json
 { "extensions": ["/path/to/smart-copy"] }
