@@ -1,0 +1,25 @@
+smart-copy/README.md
+  s_d0bb9ec9fe02aa::t_3dc7f9010fe2ba 47-51
+smart-copy/package.json
+  s_d0bb9ec9fe02aa::t_e4f972f9cdfde7 2-3,5,9-15
+smart-copy/LICENSE
+  s_d0bb9ec9fe02aa::t_8701c78ccc1566 1-21
+smart-copy/package-lock.json
+  s_d0bb9ec9fe02aa::t_21bf9833547115 2-3,8-9
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.24",
+  "base_commit_sha": "478d8c73f88beeabf7aae2549d86cfc6078fc51b",
+  "prompts": {},
+  "sessions": {
+    "s_d0bb9ec9fe02aa": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a0b4ca-94db-72dc-b0ce-da875e3bf1ae",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "Demo-0416 <145474865+Demo-0416@users.noreply.github.com>"
+    }
+  }
+}
