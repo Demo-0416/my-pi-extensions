@@ -1,0 +1,77 @@
+pi-trace/src/web/host.tsx
+  s_d0bb9ec9fe02aa::t_dca2ac2b6c0355 28,184
+  s_d0bb9ec9fe02aa::t_ebc6f592c82581 458
+pi-trace/scripts/smoke-m8.mjs
+  s_d0bb9ec9fe02aa::t_357aaf392b0d77 75
+  s_d0bb9ec9fe02aa::t_7d0e94e6e1bed0 2,7-8,13-22,29,32,36-38,55-57,161-167,171,179-180,189-190,209-210
+pi-trace/src/stats.ts
+  s_d0bb9ec9fe02aa::t_d80131d695d559 83-91,93-102,109,143,163
+  s_d0bb9ec9fe02aa::t_3449d0cde856f0 22-26,28-29,36-37,42-50,53-54,67-73,76,79-80,116,118-121,131-134,136-138,152-153,166,172
+  s_d0bb9ec9fe02aa::t_9ede8d6f6b916a 9,18,51-52,55-66,74-75,77-78,81,92,106,125-127,135,140-142,145-151,154,160,165
+  s_d0bb9ec9fe02aa::t_258528b066b5a2 82
+  s_d0bb9ec9fe02aa::t_b6685a329cd342 139
+pi-trace/DESIGN.md
+  s_d0bb9ec9fe02aa::t_2069724e1d0a3d 489,491,502-503,505
+  s_d0bb9ec9fe02aa::t_305f8e0b93222b 496-501,504,508,510-514,516
+pi-trace/scripts/test-stats.mjs
+  s_d0bb9ec9fe02aa::t_d710150bbe341e 84
+  s_d0bb9ec9fe02aa::t_e54582f4d03ee6 6,8,12,23,35,41,47,49,62,72,100,211
+  s_d0bb9ec9fe02aa::t_296d7e4e33dfcd 1-5,7,9-11,13-22,24-34,36-40,42-46,48,50-61,63-71,73-83,85-99,101-210,212-217
+pi-trace/src/index.ts
+  s_d0bb9ec9fe02aa::t_7815af3bdebcc1 117-118,130
+pi-trace/src/session-loader.ts
+  s_d0bb9ec9fe02aa::t_119130aa5d5600 79
+  s_d0bb9ec9fe02aa::t_90090f5520379b 73,76-78,80-81,156,160,238
+  s_d0bb9ec9fe02aa::t_77d5d3f82ed010 4,6-10,52,74-75,130,145-150,161,185,196-199,216-217,220-221,233,240-245,256,287
+  s_d0bb9ec9fe02aa::t_2511affc9f6a23 249
+  s_d0bb9ec9fe02aa::t_23fc6659eb8833 11
+  s_d0bb9ec9fe02aa::t_c4c1bbae3b12d2 258
+pi-trace/src/web/build.mjs
+  s_d0bb9ec9fe02aa::t_e25a0a05b34496 10,69,83-84
+pi-trace/README.md
+  s_d0bb9ec9fe02aa::t_353ca001063009 8,14,21,52,63
+  s_d0bb9ec9fe02aa::t_07d8084eff972f 85-86,93-100
+  s_d0bb9ec9fe02aa::t_f2d0c98aa726f4 101
+pi-trace/src/collector.ts
+  s_d0bb9ec9fe02aa::t_2fee2cc9b5095a 304,354,368-371,386,432,454,467-475,485,506,512
+pi-trace/src/model.ts
+  s_d0bb9ec9fe02aa::t_ee42f3705d02f9 33-34
+.github/workflows/pi-trace.yml
+  s_d0bb9ec9fe02aa::t_e527d0bd627866 1-39
+pi-trace/package.json
+  s_d0bb9ec9fe02aa::t_a188219ca9b645 51
+  s_d0bb9ec9fe02aa::t_020166242e765d 2-3,16-17,20
+  s_d0bb9ec9fe02aa::t_7796064f4ed33c 50
+  s_d0bb9ec9fe02aa::t_a99f29e2cc944a 7-10,40,49
+pi-trace/src/web/adapter.ts
+  s_d0bb9ec9fe02aa::t_000ecfe6e4e3c2 289
+  s_d0bb9ec9fe02aa::t_566a8f1fb1c026 46,76,182-186,189,277,280,310-311
+pi-trace/src/web/dist/host.js
+  s_d0bb9ec9fe02aa::t_6a18b56b8720c6 44154-44250,44444-44446,47943,48488-48492,48560,48563,48592-48593,48963
+  s_d0bb9ec9fe02aa::t_18aab829ef7aa8 48572
+  s_d0bb9ec9fe02aa::t_e966af3d557864 44153
+pi-trace/CHANGELOG.md
+  s_d0bb9ec9fe02aa::t_900024ada679d6 1-10
+pi-trace/src/web/smoke-e2e.mjs
+  s_d0bb9ec9fe02aa::t_2085a45dc1fd5a 5,13,151-152,155-159,169-170,189-191,196,201,204-219,227-229,231-235
+pi-trace/src/web/vendor/TrajectoryTable.tsx
+  s_d0bb9ec9fe02aa::t_fa9f334d36f2fa 30,330-333
+pi-trace/src/web/vendor/layout.ts
+  s_d0bb9ec9fe02aa::t_f2bf16ce6a1291 681
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.24",
+  "base_commit_sha": "0c2fa64ccc265ab7fbe8f958a46181277486ac0a",
+  "prompts": {},
+  "sessions": {
+    "s_d0bb9ec9fe02aa": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a0b4ca-94db-72dc-b0ce-da875e3bf1ae",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "Demo-0416 <145474865+Demo-0416@users.noreply.github.com>"
+    }
+  }
+}
