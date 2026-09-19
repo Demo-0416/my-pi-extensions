@@ -1,10 +1,18 @@
 {
-  "name": "smart-copy",
-  "version": "0.1.0",
+  "name": "@demo-0416/smart-copy",
+  "version": "0.1.1",
   "description": "pi extension: smart copy — segment-aware /copyx (code blocks, Markdown sections, multi-message picker)",
+  "keywords": ["pi-package", "pi-extension", "clipboard", "copy"],
   "type": "module",
   "main": "src/index.ts",
   "license": "MIT",
+  "author": "Demo-0416",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Demo-0416/my-pi-extensions.git",
+    "directory": "smart-copy"
+  },
+  "files": ["src", "README.md", "LICENSE"],
   "pi": {
     "extensions": [
       "./src/index.ts"

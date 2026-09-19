@@ -25,6 +25,7 @@ import { trajectoryRecordId } from './vendor/trajectory-record.ts'
 import { TrajectorySearchIndex } from './vendor/trajectory-search-index.ts'
 import { en, zh } from './vendor/locales.ts'
 import { adaptSession, type SessionJson } from './adapter.ts'
+import { computeStats } from '../stats.ts'
 import './theme.css'
 
 const EMPTY_TURN_IDS: ReadonlySet<number> = new Set()
@@ -180,48 +181,7 @@ function computeRequestNumbers(nodes: unknown[], requests: unknown[]): readonly 
   return numbered
 }
 
-// --- 统计栏（与 src/stats.ts 同口径） ---
-
-function computeStats(session: SessionJson) {
-  let llmMs = 0, toolMs = 0, ttftSum = 0, ttftCount = 0, decodeMs = 0
-  let inputTokens = 0, outputTokens = 0, cacheReadTokens = 0, costTotal = 0
-  let turns = 0
-  for (const record of session.records) {
-    if (record.kind === 'assistant') {
-      turns = Math.max(turns, (record.turn ?? 0) + 1)
-      if (record.durationMs !== null) llmMs += record.durationMs
-      if (record.ttftMs !== null && record.ttftMs !== undefined) {
-        ttftSum += record.ttftMs
-        ttftCount += 1
-        if (record.durationMs !== null) decodeMs += Math.max(0, record.durationMs - record.ttftMs)
-      } else if (record.durationMs !== null) {
-        decodeMs += record.durationMs
-      }
-    } else if (record.kind === 'tool' && record.durationMs !== null) {
-      toolMs += record.durationMs
-    }
-    const usage = record.usage
-    if (usage) {
-      inputTokens += usage.input
-      outputTokens += usage.output
-      cacheReadTokens += usage.cacheRead
-      costTotal += usage.costTotal
-    }
-  }
-  const cacheDenom = inputTokens + cacheReadTokens
-  return {
-    turns,
-    steps: session.records.length,
-    llmMs,
-    toolMs,
-    avgTtftMs: ttftCount > 0 ? ttftSum / ttftCount : null,
-    tokPerSec: decodeMs > 0 && outputTokens > 0 ? outputTokens / (decodeMs / 1000) : null,
-    cacheHitRate: cacheDenom > 0 ? cacheReadTokens / cacheDenom : null,
-    inputTokens,
-    outputTokens,
-    costTotal,
-  }
-}
+// --- 统计栏：与 TUI / SSE 共用 ../stats.ts，避免口径漂移 ---
 
 function formatElapsed(ms: number | null): string {
   if (ms === null || !Number.isFinite(ms)) return '—'
@@ -495,7 +455,7 @@ function TraceApp() {
     setSelectedTimelineIndex(index)
   }, [])
 
-  const stats = session ? computeStats(session) : null
+  const stats = session ? computeStats({ records: session.records }) : null
 
   return (
     <div className="pi-trace-root">

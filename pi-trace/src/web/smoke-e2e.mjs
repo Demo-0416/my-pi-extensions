@@ -2,6 +2,7 @@
  * 端到端冒烟：静态文件 + fixture API（/api/sessions、/api/session/{id}、/api/events SSE）。
  * 用法：node smoke-e2e.mjs
  */
+import assert from 'node:assert/strict'
 import { chromium } from 'playwright'
 import { createServer } from 'node:http'
 import { readFileSync, existsSync, mkdirSync } from 'node:fs'
@@ -9,7 +10,7 @@ import { resolve, dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const here = dirname(fileURLToPath(import.meta.url))
-const port = 4399
+let port
 const now = Date.now()
 
 // fixture TraceSession（含 collector 补全后的新字段）
@@ -147,11 +148,15 @@ const server = createServer((req, res) => {
   res.end(readFileSync(file))
 })
 
-await new Promise((r) => server.listen(port, '127.0.0.1', r))
+await new Promise((r) => server.listen(0, '127.0.0.1', r))
+port = server.address().port
 console.log(`e2e server on http://127.0.0.1:${port}`)
 
-const browser = await chromium.launch({
-  executablePath: `${process.env.HOME}/Library/Caches/ms-playwright/chromium_headless_shell-1208/chrome-headless-shell-mac-arm64/chrome-headless-shell`,
+let browser
+try {
+browser = await chromium.launch({
+  ...(process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH
+    ? { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH } : {}),
 })
 const page = await browser.newPage({ viewport: { width: 1440, height: 900 } })
 const errors = []
@@ -161,7 +166,8 @@ page.on('console', (msg) => {
 page.on('pageerror', (err) => errors.push(`pageerror: ${err.message}`))
 
 await page.goto(`http://127.0.0.1:${port}/?session=${session.sessionId}`, { waitUntil: 'networkidle' })
-await page.waitForTimeout(1500)
+await page.locator('.stats').waitFor()
+assert.match(await page.locator('.stats').innerText(), /42\.9 tok\/s/)
 
 mkdirSync(join(here, 'shots'), { recursive: true })
 await page.screenshot({ path: join(here, 'shots/e2e.png'), fullPage: false })
@@ -180,27 +186,50 @@ const detailChecks = {}
 // assistant 行
 await page.locator('tr').filter({ has: page.locator('.dsh-TrajectoryTable-assistantVioletBright') }).first().click()
 await page.waitForTimeout(400)
-detailChecks.assistantTabs = await page.locator('[class*="detail"] [role="tab"], [class*="tab"]').allTextContents()
+detailChecks.assistantTabs = await page.getByRole('tab').allTextContents()
+const throughputText = () => page.locator('dt').filter({ hasText: /^Throughput$/ }).locator('..').locator('dd').innerText()
+assert.equal(await throughputText(), '57.1 tok/s')
 await page.screenshot({ path: join(here, 'shots/detail-assistant.png') })
 // tool 行
 await page.locator('tr').filter({ has: page.locator('.dsh-TrajectoryTable-toolAmber') }).first().click()
 await page.waitForTimeout(400)
-detailChecks.toolTabs = await page.locator('[class*="detail"] [role="tab"], [class*="tab"]').allTextContents()
+detailChecks.toolTabs = await page.getByRole('tab').allTextContents()
 await page.screenshot({ path: join(here, 'shots/detail-tool.png') })
 // system 行
 await page.locator('tr').filter({ has: page.locator('.dsh-TrajectoryTable-systemNeutral') }).first().click()
 await page.waitForTimeout(400)
-detailChecks.systemTabs = await page.locator('[class*="detail"] [role="tab"], [class*="tab"]').allTextContents()
+detailChecks.systemTabs = await page.getByRole('tab').allTextContents()
 await page.screenshot({ path: join(here, 'shots/detail-system.png') })
 
-await browser.close()
-server.close()
+// Regressions in the actual bundle: tool usage + untimed output + 1ms decode span.
+session.records.find(r => r.id === 'r2').ttftMs = 7999
+session.records.find(r => r.id === 'r3').usage = {
+  input: 0, output: 500_000, cacheRead: 0, cacheWrite: 0, costTotal: 0,
+}
+session.records.push({
+  id: 'untimed', kind: 'assistant', turn: 3, startedAt: now, durationMs: null,
+  completed: true, text: 'Finished, timing unavailable', isError: false,
+  usage: { input: 0, output: 300_000, cacheRead: 0, cacheWrite: 0, costTotal: 0 },
+})
+await page.reload({ waitUntil: 'networkidle' })
+await page.locator('.stats').waitFor()
+assert.match(await page.locator('.stats').innerText(), /34\.7 tok\/s/)
+await page.locator('tr').filter({ has: page.locator('.dsh-TrajectoryTable-assistantVioletBright') }).first().click()
+assert.equal(await throughputText(), 'Insufficient timing or usage')
+console.log('TPS regression checks: aggregate and per-request panel OK')
 
 console.log('checks:', JSON.stringify(checks))
 console.log('detail tabs:', JSON.stringify(detailChecks))
 if (errors.length > 0) {
   console.log('ERRORS:')
   for (const e of errors.slice(0, 10)) console.log(`  ${e}`)
-  process.exit(1)
 }
+assert.deepEqual(errors, [])
+assert.ok(checks.timelineSpans > 0)
+assert.ok(checks.rows > 0)
 console.log('e2e OK')
+} finally {
+  await browser?.close()
+  server.closeAllConnections()
+  await new Promise(resolve => server.close(resolve))
+}

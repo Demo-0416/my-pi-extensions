@@ -301,6 +301,7 @@ export class Collector {
   /** 记录闭合：算 durationMs、广播 upsert。纯内存，不落盘。 */
   private closeRecord(record: TraceRecord, durationMs: number | null): void {
     record.durationMs = durationMs;
+    record.completed = true;
     this.attachToTurn(record);
     const end = record.startedAt + (durationMs ?? 0);
     const bucket = record.turn === null
@@ -350,6 +351,7 @@ export class Collector {
       turn: this.currentTurn,
       startedAt: start.startedAt,
       durationMs: null,
+      completed: false,
       text: model ? `${model} …` : '…',
       isError: false,
       model,
@@ -363,8 +365,10 @@ export class Collector {
     this.addRecord(record);
   }
 
-  onMessageUpdate(): void {
-    // 首个 content delta 的时间 = 首 token 时间。
+  onMessageUpdate(event: { type?: string; delta?: string }): void {
+    // Only generated content marks the first token, never stream lifecycle/usage events.
+    if (!['text_delta', 'thinking_delta', 'toolcall_delta'].includes(event.type ?? '')
+      || typeof event.delta !== 'string' || event.delta.length === 0) return;
     const start = this.llmStarts[this.llmStarts.length - 1];
     if (start !== undefined && start.firstTokenAt === null) {
       start.firstTokenAt = Date.now();
@@ -379,6 +383,7 @@ export class Collector {
     model?: string;
     stopReason?: string;
     usage?: unknown;
+    toolCallId?: string;
   }): void {
     if (message.role === 'user') {
       // source 不是 interactive 的 user 消息 → context（系统注入的上下文/提醒）。
@@ -424,7 +429,7 @@ export class Collector {
         existing.fullText = this.truncateAndStore(existing.id, 'fullText', textFromContent(message.content));
         existing.thinking = this.truncateAndStore(existing.id, 'thinking', thinkingFromContent(message.content)) || undefined;
         existing.toolCalls = toolCallsFromContent(message.content);
-        existing.isError = message.stopReason === 'error';
+        existing.isError = message.stopReason === 'error' || message.stopReason === 'aborted';
         existing.model = start?.model ?? message.model;
         existing.provider = start?.provider ?? message.provider;
         existing.usage = usageFromMessage(message);
@@ -446,7 +451,7 @@ export class Collector {
         fullText: this.truncateAndStore(newId, 'fullText', textFromContent(message.content)),
         thinking: this.truncateAndStore(newId, 'thinking', thinkingFromContent(message.content)) || undefined,
         toolCalls: toolCallsFromContent(message.content),
-        isError: message.stopReason === 'error',
+        isError: message.stopReason === 'error' || message.stopReason === 'aborted',
         model: start?.model ?? message.model,
         provider: start?.provider ?? message.provider,
         usage: usageFromMessage(message),
@@ -459,7 +464,15 @@ export class Collector {
       this.closeRecord(record, Math.max(0, now - startedAt));
       return;
     }
-    // role=toolResult 的 message_end 忽略：tool 记录以 tool_execution_* 为准。
+    // The final message may include usage replaced by later tool_result middleware.
+    // Update the existing tool record; never count its text as model output.
+    if (message.role === 'toolResult' && message.toolCallId) {
+      const record = this.session.records.find(r => r.kind === 'tool' && r.callId === message.toolCallId);
+      if (record !== undefined && message.usage !== undefined) {
+        record.usage = usageFromMessage(message);
+        this.emit({ type: 'record', record });
+      }
+    }
   }
 
   onToolExecutionStart(toolCallId: string, toolName: string, args: unknown): void {
@@ -469,6 +482,7 @@ export class Collector {
       turn: this.currentTurn,
       startedAt: Date.now(),
       durationMs: null,
+      completed: false,
       text: `${toolName} ${oneLine(JSON.stringify(args ?? {}), 120)}`,
       isError: false,
       toolName,
@@ -489,11 +503,13 @@ export class Collector {
     content: unknown,
     details: unknown,
     isError: boolean,
+    usage?: unknown,
   ): void {
     const record = this.openTools.get(toolCallId);
     if (record === undefined) return;
     record.result = this.truncateAndStore(record.id, 'result', textFromContent(content) || stringifyDetails(details));
     record.isError = isError;
+    if (usage !== undefined) record.usage = usageFromMessage({ usage });
     const exitCode = (details as { exitCode?: unknown } | null)?.exitCode;
     if (typeof exitCode === 'number') record.exitCode = exitCode;
     this.emit({ type: 'record', record });

@@ -30,6 +30,8 @@ export interface TraceRecord {
   startedAt: number;
   /** rich 精确；重建为推断；user/system 为 null。 */
   durationMs: number | null;
+  /** 完成状态独立于时长：历史记录可能已完成，但时间戳不足以计算时长。 */
+  completed?: boolean;
   /** 单行摘要（CSS ellipsis）。 */
   text: string;
   /** 完整正文（user/assistant，8KB 截断；dsh previewMarkdown/outputDetail 用）。 */

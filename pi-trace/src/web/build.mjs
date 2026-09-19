@@ -7,7 +7,7 @@
  * 不引入运行时 CSS-in-JS 依赖，bundle 自包含。
  */
 import { build, context } from 'esbuild'
-import { readFileSync, mkdirSync } from 'node:fs'
+import { readFileSync, mkdirSync, rmSync } from 'node:fs'
 import { basename, dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -66,6 +66,7 @@ const cssModulesPlugin = {
 }
 
 const options = {
+  absWorkingDir: here,
   entryPoints: [resolve(here, 'host.tsx')],
   outdir: resolve(here, 'dist'),
   bundle: true,
@@ -79,6 +80,8 @@ const options = {
   plugins: [cssModulesPlugin],
 }
 
+// Drop obsolete hashed chunks from earlier builds before packaging.
+if (!watch) rmSync(resolve(here, 'dist'), { recursive: true, force: true })
 mkdirSync(resolve(here, 'dist'), { recursive: true })
 
 if (watch) {

@@ -43,6 +43,7 @@ interface RecordJson {
   turn: number | null
   startedAt: number
   durationMs: number | null
+  completed?: boolean
   text: string
   fullText?: string
   isError: boolean
@@ -72,7 +73,7 @@ interface RecordJson {
   source?: unknown
 }
 
-interface SessionJson {
+export interface SessionJson {
   sessionId: string
   cwd: string
   startedAt: number
@@ -178,12 +179,14 @@ export function adaptSession(session: SessionJson): AdapterResult {
     }
 
     if (record.kind === 'assistant') {
-      const completed = record.durationMs !== null
-      const stepStartTime = record.startedAt
-      const firstTokenTime = record.ttftMs !== null && record.ttftMs !== undefined
+      const completed = record.completed ?? (record.durationMs !== null)
+      const hasDuration = record.durationMs !== null && Number.isFinite(record.durationMs) && record.durationMs >= 0
+      const stepStartTime = hasDuration ? record.startedAt : null
+      const firstTokenTime = hasDuration && !record.isError && record.ttftMs !== null && record.ttftMs !== undefined
+        && Number.isFinite(record.ttftMs) && record.ttftMs >= 0 && record.ttftMs <= record.durationMs!
         ? record.startedAt + record.ttftMs
         : null
-      const completedTime = completed ? record.startedAt + record.durationMs! : record.startedAt
+      const completedTime = completed && hasDuration ? record.startedAt + record.durationMs! : record.startedAt
 
       const blocks: unknown[] = []
       const text = record.fullText ?? record.text
@@ -271,10 +274,10 @@ export function adaptSession(session: SessionJson): AdapterResult {
     }
 
     if (record.kind === 'tool') {
-      const completed = record.durationMs !== null
+      const completed = record.completed ?? (record.durationMs !== null)
       const callId = record.callId ?? `syn-${record.id}`
       const name = record.toolName ?? 'tool'
-      const endTime = completed ? record.startedAt + record.durationMs! : record.startedAt
+      const endTime = completed ? record.startedAt + (record.durationMs ?? 0) : record.startedAt
       const resultText = resultTextOf(record)
       if (completed) {
         nodes.push({
@@ -283,7 +286,7 @@ export function adaptSession(session: SessionJson): AdapterResult {
           time: endTime,
           callId,
           call: { name, argsRaw: argsRawOf(record) },
-          callTime: record.startedAt,
+          callTime: record.durationMs === null ? undefined : record.startedAt,
           content: resultText ? [{ type: 'text', text: resultText }] : [],
           isError: record.isError,
           ...(record.isError ? { error: { name: 'ToolError', code: String(record.exitCode ?? 'error') } } : {}),
@@ -304,8 +307,8 @@ export function adaptSession(session: SessionJson): AdapterResult {
     }
 
     if (record.kind === 'compacted') {
-      const completed = record.durationMs !== null
-      const endTime = completed ? record.startedAt + record.durationMs! : null
+      const completed = record.completed ?? (record.durationMs !== null)
+      const endTime = completed ? record.startedAt + (record.durationMs ?? 0) : null
       requests.push({
         purpose: 'compaction' as const,
         turn: null,

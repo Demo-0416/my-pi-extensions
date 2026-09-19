@@ -678,7 +678,7 @@ function expandAssistant(
   const usage = node.usage as UsageLike | undefined
   const streaming = opts?.streaming === true
   const recordedStart = finiteTime(node.timing?.stepStartTime)
-  const messageDuration = streaming
+  const messageDuration = streaming || (node.timing !== undefined && recordedStart === null)
     ? null
     : durationSeconds(node.time, recordedStart ?? prevAbsTime)
   const nodeAbs = streaming ? null : finiteTime(node.time)

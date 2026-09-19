@@ -486,24 +486,34 @@ Turn 3
 | 轮数 | turn 数 |
 | 步数 | record 数 |
 | LLM 总时长 | Σ assistant.durationMs |
-| 工具总时长 | Σ tool.durationMs |
+| 工具总时长 | 各 tool span **并集**（并行工具不重复计时） |
 | 平均 TTFT | Σ ttft / N（仅 rich） |
-| 输出速率 | Σ output / Σ (assistant.durationMs − ttftMs) |
+| 输出速率 | Σ output / Σ decodeMs，**只取合格样本**（见下） |
 | 缓存命中率 | Σ cacheRead / Σ (input + cacheRead) |
 | 输入/输出 | Σ usage.input / Σ usage.output |
 | 费用 | Σ usage.cost.total |
 
+**输出速率（tok/s）的分子分母必须来自同一批记录。** 旧逻辑会把时长未知的最后一条回复的 token 加进分子，却没有对应的时长，导致速率虚高。TUI、SSE 和网页现共用 `stats.ts`。一条 assistant 记录只有同时满足下列条件才作为速率样本，其 output 与 decodeMs 成对入账：
+
+- `durationMs` 为非负有限数（时长未知的记录，其 token 也不进分子）
+- 若有 TTFT，必须为有限数且位于 `[0, durationMs]`
+- `decodeMs ≥ 50ms`（测量窗口下限，不是 TPS 上限；网页单条请求也使用该限制）
+- `output` 为正有限数，且请求未失败或中断（不完整 usage 不用于速率）
+- 记录 kind 为 assistant —— 工具自带的 `usage`（subagent 等嵌套 LLM 调用）计入 `outputTokens` 与费用，但单列 `nestedOutputTokens`，**绝不进速率分子**
+
+有 TTFT 时，`decodeMs = durationMs − ttftMs`；无 TTFT 时使用完整请求时长，得到包含等待时间的平均速率，不能与纯解码速率直接比较。无合格样本时 `tokPerSec = null`，统计栏省略 TPS；`tokPerSecSamples` 提供样本数。工具文本不用于估算 output token，工具嵌套 usage 单独计入总量。
+
 ### 3.7 历史会话回放（session-loader.ts）
 
-Web 端会话列表扫两个目录合并：`~/.pi/agent/sessions/**/*.jsonl`（元信息：cwd、首条消息时间、turn 数）+ `~/.pi/agent/traces/*.jsonl`（标记 rich）。
+Web 端扫描 `~/.pi/agent/sessions/**/*.jsonl`，live 时序保留在内存中，不写 sidecar。
 
-重建启发式（无 sidecar 时）：
+- assistant 的时长估计为 `entry.timestamp − message.timestamp`：前者为持久化时刻，后者通常为 provider 创建响应对象的时刻。此口径覆盖最后一条回复，但可能包含队列、扩展处理等开销，不等于精确解码时间。
+- tool 按 `toolCallId` 关联发起调用的 assistant。窗口起点为该 assistant 的持久化时刻，终点为 `toolResult.timestamp`，不借用其他 assistant 的时间。
+- 缺失、倒序或无效的时间戳不生成时长；不再用相邻记录间隔兜底。零时长保留，但不计入 TPS。
+- `completed` 与 `durationMs` 分离：历史记录即使时长未知，也不显示为正在生成。
+- TTFT 不可从历史记录恢复；精度标记为 `reconstructed`。
 
-- user/assistant/toolResult 消息 → 对应记录，`startedAt = message.timestamp`
-- `durationMs` = 下一条记录起点 − 本条起点（最后一条为 null）
-- TTFT = null（前端显示 `—`）
-- `model_change` entry → 记为 system 备注
-- 精度标记 `reconstructed`，页面上明确标识
+> JSONL 不记录逐工具的执行起点，派发到返回的窗口可能包含排队、审批、串行等待或批次收尾开销。并集避免重复计时，但仍是估计值；更精确的执行时序需要 live 的 `tool_execution_start/end` 事件。
 
 ### 3.8 HTTP / SSE API（server.ts）
 

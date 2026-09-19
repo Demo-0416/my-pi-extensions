@@ -27,6 +27,7 @@ import type { TrajectoryVirtualRow } from './trajectory-virtual-rows.ts'
 import type { TrajectoryTurnModel } from './layout.ts'
 import { trajectoryPreviewText } from './trajectory-preview.ts'
 import css from './TrajectoryTable.module.css'
+import { outputTokensPerSecond } from '../../stats.ts'
 
 const BOTTOM_FOLLOW_THRESHOLD_PX = 2
 const OLDER_LOAD_THRESHOLD_PX = 48
@@ -326,9 +327,10 @@ function throughput(metrics: AssistantMetricDetail): string {
   if (metrics.outputTokens === null) return 'Output tokens unavailable'
   if (!metrics.timingRecorded || metrics.firstTokenTime === null) return 'First token unavailable'
   if (metrics.completedTime === null) return 'Pending'
-  const generationSeconds = (metrics.completedTime - metrics.firstTokenTime) / 1_000
-  if (generationSeconds <= 0) return 'Duration too short'
-  return `${(metrics.outputTokens / generationSeconds).toFixed(1)} tok/s`
+  if (metrics.stepStartTime === null || !Number.isFinite(metrics.stepStartTime)
+    || metrics.firstTokenTime < metrics.stepStartTime) return 'Timing unavailable'
+  const rate = outputTokensPerSecond(metrics.outputTokens, metrics.completedTime - metrics.firstTokenTime)
+  return rate === null ? 'Insufficient timing or usage' : `${rate.toFixed(1)} tok/s`
 }
 
 function AssistantTimingPanel({ metrics }: { metrics: AssistantMetricDetail }) {

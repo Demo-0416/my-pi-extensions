@@ -44150,6 +44150,104 @@ if (typeof document !== "undefined") {
 }
 var TrajectoryTable_default = css6;
 
+// ../stats.ts
+var MIN_DECODE_MS_FOR_RATE = 50;
+function validNonNegative(value) {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0;
+}
+function nonNegativeOrZero(value) {
+  return validNonNegative(value) ? value : 0;
+}
+function outputTokensPerSecond(output, durationMs) {
+  if (!validNonNegative(output) || output === 0 || !validNonNegative(durationMs) || durationMs < MIN_DECODE_MS_FOR_RATE) return null;
+  const rate = output / (durationMs / 1e3);
+  return Number.isFinite(rate) ? rate : null;
+}
+function decodeMsOf(record) {
+  if (!validNonNegative(record.durationMs)) return null;
+  if (record.ttftMs !== null && record.ttftMs !== void 0) {
+    if (!validNonNegative(record.ttftMs) || record.ttftMs > record.durationMs) return null;
+    return record.durationMs - record.ttftMs;
+  }
+  return record.durationMs;
+}
+function unionMs(spans) {
+  if (spans.length === 0) return 0;
+  const sorted = [...spans].sort((a2, b3) => a2[0] - b3[0]);
+  let total = 0;
+  let [start, cursor] = sorted[0];
+  for (const [from, to] of sorted.slice(1)) {
+    if (from > cursor) {
+      total += cursor - start;
+      start = from;
+      cursor = to;
+    } else if (to > cursor) {
+      cursor = to;
+    }
+  }
+  return total + (cursor - start);
+}
+function computeStats(session) {
+  const records = session.records;
+  let llmMs = 0;
+  const toolSpans = [];
+  let ttftSum = 0;
+  let ttftCount = 0;
+  let inputTokens = 0;
+  let outputTokens = 0;
+  let cacheReadTokens = 0;
+  let cacheWriteTokens = 0;
+  let nestedOutputTokens = 0;
+  let costTotal = 0;
+  let rateTokens = 0;
+  let rateMs = 0;
+  let rateSamples = 0;
+  for (const record of records) {
+    if (record.kind === "assistant") {
+      llmMs += nonNegativeOrZero(record.durationMs);
+      if (validNonNegative(record.ttftMs) && validNonNegative(record.durationMs) && record.ttftMs <= record.durationMs) {
+        ttftSum += record.ttftMs;
+        ttftCount += 1;
+      }
+      const decodeMs = decodeMsOf(record);
+      const output = record.usage?.output ?? 0;
+      if (!record.isError && decodeMs !== null && outputTokensPerSecond(output, decodeMs) !== null) {
+        rateTokens += output;
+        rateMs += decodeMs;
+        rateSamples += 1;
+      }
+    } else if (record.kind === "tool" && validNonNegative(record.startedAt) && validNonNegative(record.durationMs) && Number.isFinite(record.startedAt + record.durationMs)) {
+      toolSpans.push([record.startedAt, record.startedAt + record.durationMs]);
+    }
+    const usage = record.usage;
+    if (usage !== void 0 && (record.kind === "assistant" || record.kind === "tool")) {
+      inputTokens += nonNegativeOrZero(usage.input);
+      outputTokens += nonNegativeOrZero(usage.output);
+      cacheReadTokens += nonNegativeOrZero(usage.cacheRead);
+      cacheWriteTokens += nonNegativeOrZero(usage.cacheWrite);
+      costTotal += nonNegativeOrZero(usage.costTotal);
+      if (record.kind === "tool") nestedOutputTokens += nonNegativeOrZero(usage.output);
+    }
+  }
+  const cacheDenom = inputTokens + cacheReadTokens;
+  return {
+    turns: session.turns?.length ?? new Set(records.filter((r5) => r5.turn !== null).map((r5) => r5.turn)).size,
+    steps: records.length,
+    llmMs,
+    toolMs: unionMs(toolSpans),
+    avgTtftMs: ttftCount > 0 ? ttftSum / ttftCount : null,
+    tokPerSec: outputTokensPerSecond(rateTokens, rateMs),
+    tokPerSecSamples: rateSamples,
+    cacheHitRate: cacheDenom > 0 ? cacheReadTokens / cacheDenom : null,
+    inputTokens,
+    outputTokens,
+    cacheReadTokens,
+    cacheWriteTokens,
+    nestedOutputTokens,
+    costTotal
+  };
+}
+
 // vendor/TrajectoryTable.tsx
 var import_jsx_runtime9 = __toESM(require_jsx_runtime(), 1);
 var BOTTOM_FOLLOW_THRESHOLD_PX = 2;
@@ -44343,9 +44441,9 @@ function throughput(metrics) {
   if (metrics.outputTokens === null) return "Output tokens unavailable";
   if (!metrics.timingRecorded || metrics.firstTokenTime === null) return "First token unavailable";
   if (metrics.completedTime === null) return "Pending";
-  const generationSeconds = (metrics.completedTime - metrics.firstTokenTime) / 1e3;
-  if (generationSeconds <= 0) return "Duration too short";
-  return `${(metrics.outputTokens / generationSeconds).toFixed(1)} tok/s`;
+  if (metrics.stepStartTime === null || !Number.isFinite(metrics.stepStartTime) || metrics.firstTokenTime < metrics.stepStartTime) return "Timing unavailable";
+  const rate = outputTokensPerSecond(metrics.outputTokens, metrics.completedTime - metrics.firstTokenTime);
+  return rate === null ? "Insufficient timing or usage" : `${rate.toFixed(1)} tok/s`;
 }
 function AssistantTimingPanel({ metrics }) {
   return /* @__PURE__ */ (0, import_jsx_runtime9.jsxs)("dl", { className: TrajectoryTable_default.overview, children: [
@@ -47842,7 +47940,7 @@ function expandAssistant(node2, startIndex, prevAbsTime, results, callStarts, ca
   const usage = node2.usage;
   const streaming = opts?.streaming === true;
   const recordedStart = finiteTime(node2.timing?.stepStartTime);
-  const messageDuration = streaming ? null : durationSeconds(node2.time, recordedStart ?? prevAbsTime);
+  const messageDuration = streaming || node2.timing !== void 0 && recordedStart === null ? null : durationSeconds(node2.time, recordedStart ?? prevAbsTime);
   const nodeAbs = streaming ? null : finiteTime(node2.time);
   const messageText = node2.blocks.filter((block) => block.kind === "text" && (!streaming || block.text !== "")).map((block) => block.kind === "text" ? block.text : "").join("\n\n");
   const thinkingText = node2.blocks.filter((block) => block.kind === "reasoning" && (!streaming || block.text !== "")).map((block) => block.kind === "reasoning" ? block.text : "").join("\n\n");
@@ -48387,10 +48485,11 @@ function adaptSession(session) {
       continue;
     }
     if (record.kind === "assistant") {
-      const completed = record.durationMs !== null;
-      const stepStartTime = record.startedAt;
-      const firstTokenTime = record.ttftMs !== null && record.ttftMs !== void 0 ? record.startedAt + record.ttftMs : null;
-      const completedTime = completed ? record.startedAt + record.durationMs : record.startedAt;
+      const completed = record.completed ?? record.durationMs !== null;
+      const hasDuration = record.durationMs !== null && Number.isFinite(record.durationMs) && record.durationMs >= 0;
+      const stepStartTime = hasDuration ? record.startedAt : null;
+      const firstTokenTime = hasDuration && !record.isError && record.ttftMs !== null && record.ttftMs !== void 0 && Number.isFinite(record.ttftMs) && record.ttftMs >= 0 && record.ttftMs <= record.durationMs ? record.startedAt + record.ttftMs : null;
+      const completedTime = completed && hasDuration ? record.startedAt + record.durationMs : record.startedAt;
       const blocks = [];
       const text6 = record.fullText ?? record.text;
       if (text6) blocks.push({ kind: "text", text: text6 });
@@ -48458,10 +48557,10 @@ function adaptSession(session) {
       continue;
     }
     if (record.kind === "tool") {
-      const completed = record.durationMs !== null;
+      const completed = record.completed ?? record.durationMs !== null;
       const callId = record.callId ?? `syn-${record.id}`;
       const name = record.toolName ?? "tool";
-      const endTime = completed ? record.startedAt + record.durationMs : record.startedAt;
+      const endTime = completed ? record.startedAt + (record.durationMs ?? 0) : record.startedAt;
       const resultText = resultTextOf(record);
       if (completed) {
         nodes.push({
@@ -48470,7 +48569,7 @@ function adaptSession(session) {
           time: endTime,
           callId,
           call: { name, argsRaw: argsRawOf(record) },
-          callTime: record.startedAt,
+          callTime: record.durationMs === null ? void 0 : record.startedAt,
           content: resultText ? [{ type: "text", text: resultText }] : [],
           isError: record.isError,
           ...record.isError ? { error: { name: "ToolError", code: String(record.exitCode ?? "error") } } : {},
@@ -48490,8 +48589,8 @@ function adaptSession(session) {
       continue;
     }
     if (record.kind === "compacted") {
-      const completed = record.durationMs !== null;
-      const endTime = completed ? record.startedAt + record.durationMs : null;
+      const completed = record.completed ?? record.durationMs !== null;
+      const endTime = completed ? record.startedAt + (record.durationMs ?? 0) : null;
       requests.push({
         purpose: "compaction",
         turn: null,
@@ -48628,46 +48727,6 @@ function computeRequestNumbers(nodes, requests) {
     });
   }
   return numbered;
-}
-function computeStats(session) {
-  let llmMs = 0, toolMs = 0, ttftSum = 0, ttftCount = 0, decodeMs = 0;
-  let inputTokens = 0, outputTokens = 0, cacheReadTokens = 0, costTotal = 0;
-  let turns = 0;
-  for (const record of session.records) {
-    if (record.kind === "assistant") {
-      turns = Math.max(turns, (record.turn ?? 0) + 1);
-      if (record.durationMs !== null) llmMs += record.durationMs;
-      if (record.ttftMs !== null && record.ttftMs !== void 0) {
-        ttftSum += record.ttftMs;
-        ttftCount += 1;
-        if (record.durationMs !== null) decodeMs += Math.max(0, record.durationMs - record.ttftMs);
-      } else if (record.durationMs !== null) {
-        decodeMs += record.durationMs;
-      }
-    } else if (record.kind === "tool" && record.durationMs !== null) {
-      toolMs += record.durationMs;
-    }
-    const usage = record.usage;
-    if (usage) {
-      inputTokens += usage.input;
-      outputTokens += usage.output;
-      cacheReadTokens += usage.cacheRead;
-      costTotal += usage.costTotal;
-    }
-  }
-  const cacheDenom = inputTokens + cacheReadTokens;
-  return {
-    turns,
-    steps: session.records.length,
-    llmMs,
-    toolMs,
-    avgTtftMs: ttftCount > 0 ? ttftSum / ttftCount : null,
-    tokPerSec: decodeMs > 0 && outputTokens > 0 ? outputTokens / (decodeMs / 1e3) : null,
-    cacheHitRate: cacheDenom > 0 ? cacheReadTokens / cacheDenom : null,
-    inputTokens,
-    outputTokens,
-    costTotal
-  };
 }
 function formatElapsed(ms) {
   if (ms === null || !Number.isFinite(ms)) return "\u2014";
@@ -48901,7 +48960,7 @@ function TraceApp() {
     setTimelineRecordSelection({ index: index2 });
     setSelectedTimelineIndex(index2);
   }, []);
-  const stats = session ? computeStats(session) : null;
+  const stats = session ? computeStats({ records: session.records }) : null;
   return /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("div", { className: "pi-trace-root", children: [
     /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("header", { className: "topbar", children: [
       /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("div", { className: "brand", children: "\u273B pi-trace" }),
