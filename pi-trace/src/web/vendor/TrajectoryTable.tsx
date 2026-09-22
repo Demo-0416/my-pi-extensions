@@ -27,7 +27,7 @@ import type { TrajectoryVirtualRow } from './trajectory-virtual-rows.ts'
 import type { TrajectoryTurnModel } from './layout.ts'
 import { trajectoryPreviewText } from './trajectory-preview.ts'
 import css from './TrajectoryTable.module.css'
-import { outputTokensPerSecond } from '../../stats.ts'
+import { generatedTokensOf, outputTokensPerSecond } from '../../stats.ts'
 
 const BOTTOM_FOLLOW_THRESHOLD_PX = 2
 const OLDER_LOAD_THRESHOLD_PX = 48
@@ -334,7 +334,10 @@ function throughput(metrics: AssistantMetricDetail): string {
   const window = metrics.reasoningUnstreamed === true
     ? metrics.completedTime - metrics.stepStartTime
     : metrics.completedTime - metrics.firstTokenTime
-  const rate = outputTokensPerSecond(metrics.outputTokens, window)
+  // 分子归一为「模型生成的全部 token」：推理分开上报的网关（output ≤ reasoning）
+  // 要补上 reasoning，已含的绝不能加（同 stats.ts generatedTokensOf）。
+  const generated = generatedTokensOf(metrics.outputTokens, metrics.reasoningTokens ?? 0)
+  const rate = outputTokensPerSecond(generated, window)
   return rate === null ? 'Insufficient timing or usage' : `${rate.toFixed(1)} tok/s`
 }
 

@@ -44163,6 +44163,10 @@ function outputTokensPerSecond(output, durationMs) {
   const rate = output / (durationMs / 1e3);
   return Number.isFinite(rate) ? rate : null;
 }
+function generatedTokensOf(output, reasoning) {
+  if (reasoning > 0 && output <= reasoning) return output + reasoning;
+  return output;
+}
 function decodeMsOf(record) {
   if (!validNonNegative(record.durationMs)) return null;
   const reasoningUnstreamed = (record.usage?.reasoning ?? 0) > 0 && !record.thinking;
@@ -44212,8 +44216,9 @@ function computeStats(session) {
       }
       const decodeMs = decodeMsOf(record);
       const output = record.usage?.output ?? 0;
+      const reasoning = record.usage?.reasoning ?? 0;
       if (!record.isError && decodeMs !== null && outputTokensPerSecond(output, decodeMs) !== null) {
-        rateTokens += output;
+        rateTokens += generatedTokensOf(output, reasoning);
         rateMs += decodeMs;
         rateSamples += 1;
       }
@@ -44444,7 +44449,8 @@ function throughput(metrics) {
   if (metrics.completedTime === null) return "Pending";
   if (metrics.stepStartTime === null || !Number.isFinite(metrics.stepStartTime) || metrics.firstTokenTime < metrics.stepStartTime) return "Timing unavailable";
   const window2 = metrics.reasoningUnstreamed === true ? metrics.completedTime - metrics.stepStartTime : metrics.completedTime - metrics.firstTokenTime;
-  const rate = outputTokensPerSecond(metrics.outputTokens, window2);
+  const generated = generatedTokensOf(metrics.outputTokens, metrics.reasoningTokens ?? 0);
+  const rate = outputTokensPerSecond(generated, window2);
   return rate === null ? "Insufficient timing or usage" : `${rate.toFixed(1)} tok/s`;
 }
 function AssistantTimingPanel({ metrics }) {
@@ -47967,6 +47973,7 @@ function expandAssistant(node2, startIndex, prevAbsTime, results, callStarts, ca
     completedTime: streaming ? null : finiteTime(node2.time),
     usageProvided: usage !== void 0,
     outputTokens: Number.isFinite(usage?.outputTokens) ? usage?.outputTokens ?? null : null,
+    ...Number.isFinite(usage?.reasoningTokens) ? { reasoningTokens: usage?.reasoningTokens ?? null } : {},
     // reasoning 未随流式下发时（adapter 标记），吞吐窗口须用整段时长，
     // 否则分子含推理 token、分母只有可见文本生成时间，速率虚高（同 stats.ts）。
     ...node2.timing?.reasoningUnstreamed === true ? { reasoningUnstreamed: true } : {}

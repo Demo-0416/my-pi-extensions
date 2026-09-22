@@ -1,6 +1,6 @@
 {
   "name": "@demo-0416/pi-trace",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "pi extension: deepseek-harness-style trajectory view — timeline gantt, turn-grouped ledger, rich detail panel, live SSE streaming",
   "keywords": [
     "pi-package",

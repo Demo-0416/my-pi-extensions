@@ -116,6 +116,33 @@ test('reasoning tokens that never streamed as deltas fall back to full duration 
   assert.equal(plain.tokPerSec, 5000);
 });
 
+test('reasoning reported separately (output ≤ reasoning) is added back to the numerator', () => {
+  // gemini-3.8-flash-high 实测：微型工具调用请求 output=27、reasoning=73（分开上报），
+  // 请求全长数秒静默窗口（服务端推理不随流下发）。分子只算 output 会压到个位数，
+  // 必须归一成 generated = output + reasoning。
+  const geminiMicro = computeStats(session([
+    record({ durationMs: 4300, ttftMs: 4200, usage: { ...usage(27), reasoning: 73 } }),
+  ]));
+  assert.equal(geminiMicro.tokPerSec, 100 / 4.3); // (27+73) / 4.3s（unstreamed 用全长）
+  // es1 型（output 已含 reasoning，output > reasoning）：绝不能加，双重计会虚高。
+  const es1 = computeStats(session([
+    record({ durationMs: 40_000, ttftMs: 39_000, usage: { ...usage(1279), reasoning: 644 } }),
+  ]));
+  assert.equal(es1.tokPerSec, 1279 / 40);
+  // 推理随流下发（thinking 非空）且 output > reasoning：分子仍按 output（保守），
+  // 分母正常扣 ttft。
+  const streamed = computeStats(session([
+    record({ durationMs: 8000, ttftMs: 500, thinking: '推理正文', usage: { ...usage(935), reasoning: 801 } }),
+  ]));
+  assert.equal(streamed.tokPerSec, 935 / 7.5);
+  // output=0 的记录即使有 reasoning 也不是速率样本（没有可见输出）。
+  const noOutput = computeStats(session([
+    record({ durationMs: 5000, ttftMs: 100, usage: { ...usage(0), reasoning: 300 } }),
+  ]));
+  assert.equal(noOutput.tokPerSec, null);
+  assert.equal(noOutput.tokPerSecSamples, 0);
+});
+
 test('the shared per-request guard rejects invalid and sub-50ms samples without capping valid rates', () => {
   for (const duration of [null, 0, 1, 49, -1, NaN, Infinity]) {
     assert.equal(outputTokensPerSecond(200, duration), null);

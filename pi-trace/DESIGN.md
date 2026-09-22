@@ -503,6 +503,8 @@ Turn 3
 
 有 TTFT 时，`decodeMs = durationMs − ttftMs`；无 TTFT 时使用完整请求时长，得到包含等待时间的平均速率，不能与纯解码速率直接比较。**例外**：`usage.reasoning > 0` 但 thinking 正文为空（如 model_hub/es1_orange_o50，推理只在服务端进行、不随流式增量下发）时，ttft 到 message_end 的窗口不包含推理生成时间，而 output 含推理 token，扣减 ttft 会使速率虚高数倍（实测 408 vs 端到端 65 tok/s）。这类记录退回整段 `durationMs`，与 reconstructed 口径一致。无合格样本时 `tokPerSec = null`，统计栏省略 TPS；`tokPerSecSamples` 提供样本数。工具文本不用于估算 output token，工具嵌套 usage 单独计入总量。
 
+**分子归一（2026-09-22 第二轮）**：推理 token 的上报口径因网关而异 —— es1/Openai Responses 的 `output` 已含 reasoning；gemini-3.8-flash-high 等把 reasoning 分开上报（`output <= reasoning`，微型工具调用请求 output 只有十几 token、请求全长却是数秒到数十秒的静默推理窗口）。速率分子统一为 `generatedTokensOf(output, reasoning)`：`output <= reasoning` 时取 `output + reasoning`（分开上报，补上），否则取 `output`（已含，绝不能加——OpenAI 上加会双重计）。实测 gemini 会话 6.6 → 8.2 tok/s，es1 会话不变。
+
 ### 3.7 历史会话回放（session-loader.ts）
 
 Web 端扫描 `~/.pi/agent/sessions/**/*.jsonl`，live 时序保留在内存中，不写 sidecar。

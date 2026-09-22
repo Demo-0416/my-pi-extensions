@@ -21,6 +21,8 @@ export interface AssistantMetricDetail {
   completedTime: number | null
   usageProvided: boolean
   outputTokens: number | null
+  /** reasoning token 数（网关分开上报时才有）；吞吐归一用，见 stats.ts generatedTokensOf。 */
+  reasoningTokens?: number | null
   /**
    * reasoning token 未随流式增量下发（thinking 正文为空）时为 true：
    * firstTokenTime→completedTime 窗口不含推理生成时间，吞吐必须改用

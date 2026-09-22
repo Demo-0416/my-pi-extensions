@@ -717,6 +717,7 @@ function expandAssistant(
     completedTime: streaming ? null : finiteTime(node.time),
     usageProvided: usage !== undefined,
     outputTokens: Number.isFinite(usage?.outputTokens) ? usage?.outputTokens ?? null : null,
+    ...(Number.isFinite(usage?.reasoningTokens) ? { reasoningTokens: usage?.reasoningTokens ?? null } : {}),
     // reasoning 未随流式下发时（adapter 标记），吞吐窗口须用整段时长，
     // 否则分子含推理 token、分母只有可见文本生成时间，速率虚高（同 stats.ts）。
     ...(node.timing?.reasoningUnstreamed === true ? { reasoningUnstreamed: true } : {}),

@@ -21,15 +21,18 @@ export interface TraceStats {
   avgTtftMs: number | null;
   /**
    * 输出速率 tok/s。分子分母必须来自**同一批** assistant 记录：
-   * Σ output / Σ decodeMs，只统计「既有解码时长、又有 output token」的记录。
+   * Σ generated / Σ decodeMs，只统计「既有解码时长、又有 output token」的记录。
    * 无合格样本为 null。
    *
-   * 2026-09-22 修正：部分网关（如 model_hub/es1_orange_o50）的 reasoning token
-   * 计入 usage.output，但推理过程**不随流式增量下发**（message 里 thinking 正文
-   * 为空、只有签名）。此时 ttft 到 message_end 的窗口只覆盖可见文本的生成时间，
-   * 而分子却包含推理 token —— durationMs − ttftMs 作分母会让速率虚高 3-6 倍
-   * （实测 408 tok/s vs 端到端 65 tok/s）。凡 reasoning > 0 且 thinking 正文
-   * 为空的记录，退回整段 durationMs（端到端口径），见 decodeMsOf。
+   * 2026-09-22 两轮修正：
+   * 1. 部分网关（model_hub/es1_orange_o50）的 reasoning token 计入 usage.output，
+   *    但推理不随流式增量下发（thinking 正文为空、只有签名）。ttft 到 message_end
+   *    的窗口只覆盖可见文本生成时间 —— 这类记录退回整段 durationMs（decodeMsOf）。
+   * 2. 另一部分网关（gemini-3.8-flash-high）的 usage.output **不含** reasoning
+   *    （分开上报）：微型工具调用请求 output 只有十几 token，请求全长却是数秒到
+   *    数十秒的静默窗口（服务端推理 + 排队）。只用 output 作分子会把端到端速率
+   *    压到个位数（实测 6.6 tok/s）—— 分子必须归一成「模型生成的全部 token」
+   *    （generatedTokensOf）。
    */
   tokPerSec: number | null;
   /** tokPerSec 的样本数（合格 assistant 记录数），0 表示该指标不可得。 */
@@ -69,6 +72,20 @@ export function outputTokensPerSecond(output: number | null | undefined, duratio
     || !validNonNegative(durationMs) || durationMs < MIN_DECODE_MS_FOR_RATE) return null;
   const rate = output / (durationMs / 1000);
   return Number.isFinite(rate) ? rate : null;
+}
+
+/**
+ * 归一「模型生成的全部 token」：推理 token 的上报口径因网关而异 ——
+ * - es1_orange_o50 / OpenAI Responses：output **已含** reasoning（output > reasoning）；
+ * - gemini-3.8-flash-high 等：output **不含** reasoning（分开上报，output ≤ reasoning）。
+ * 判别式 output ≤ reasoning：output 是可见生成 token，若它不比 reasoning 大，
+ * 说明 reasoning 没被算进 output（已含时 output ≥ reasoning 恒成立），需要补上。
+ * 已含时绝不能加（OpenAI 上加会双重计）；分开时不能不加（否则分子只剩可见 token，
+ * 端到端速率被静默推理窗口压到个位数）。
+ */
+export function generatedTokensOf(output: number, reasoning: number): number {
+  if (reasoning > 0 && output <= reasoning) return output + reasoning;
+  return output;
 }
 
 /**
@@ -144,10 +161,12 @@ export function computeStats(session: { records: readonly TraceRecord[]; turns?:
       }
       const decodeMs = decodeMsOf(record);
       const output = record.usage?.output ?? 0;
+      const reasoning = record.usage?.reasoning ?? 0;
       // 成对入账：只有「解码时长可信 + 有 output」的记录才是速率样本。
       // 失败/中断的请求（isError）时间真实但 token 不完整，整条剔除。
+      // 分子用 generatedTokensOf 归一（推理分开上报的网关要补上 reasoning）。
       if (!record.isError && decodeMs !== null && outputTokensPerSecond(output, decodeMs) !== null) {
-        rateTokens += output;
+        rateTokens += generatedTokensOf(output, reasoning);
         rateMs += decodeMs;
         rateSamples += 1;
       }
