@@ -1,0 +1,35 @@
+pi-trace/src/stats.ts
+  s_b41b3f5ac8d1fd::t_df4f17d124197e 24,27-35,77-90,164,167,169
+pi-trace/package.json
+  s_b41b3f5ac8d1fd::t_0d40d9c179c37d 3
+pi-trace/src/web/dist/host.js
+  s_b41b3f5ac8d1fd::t_d8ef0f4409d6b3 44166-44169,44219,44221,44452-44453,47976
+pi-trace/CHANGELOG.md
+  s_b41b3f5ac8d1fd::t_84926f206cc7e4 3-6
+pi-trace/scripts/test-stats.mjs
+  s_b41b3f5ac8d1fd::t_b8393c0ceca959 119-145
+pi-trace/DESIGN.md
+  s_b41b3f5ac8d1fd::t_7637edf7bd9b42 506-507
+pi-trace/src/web/vendor/TrajectoryTable.tsx
+  s_b41b3f5ac8d1fd::t_21b2fdfa07ed74 30,337-340
+pi-trace/src/web/vendor/layout.ts
+  s_b41b3f5ac8d1fd::t_dd10343520da03 720
+pi-trace/src/web/vendor/trajectory-record.ts
+  s_b41b3f5ac8d1fd::t_7fc76d986d5b23 24-25
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.24",
+  "base_commit_sha": "f0a91904fa5c7a0b89535d62375e2e5ee711260a",
+  "prompts": {},
+  "sessions": {
+    "s_b41b3f5ac8d1fd": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a0c90b-0917-73d0-99ba-5835fe27d542",
+        "model": "k3"
+      },
+      "human_author": "Demo-0416 <145474865+Demo-0416@users.noreply.github.com>"
+    }
+  }
+}
