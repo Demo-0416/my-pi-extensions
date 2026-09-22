@@ -187,6 +187,10 @@ export function adaptSession(session: SessionJson): AdapterResult {
         ? record.startedAt + record.ttftMs
         : null
       const completedTime = completed && hasDuration ? record.startedAt + record.durationMs! : record.startedAt
+      // reasoning 未随流式增量下发（thinking 正文为空）时，firstTokenTime→completedTime
+      // 窗口不含推理生成时间，而 usage.output 含推理 token —— 与 stats.ts decodeMsOf
+      // 同一判定，标记后网页单条吞吐按整段时长计算，避免虚高。
+      const reasoningUnstreamed = (record.usage?.reasoning ?? 0) > 0 && !record.thinking
 
       const blocks: unknown[] = []
       const text = record.fullText ?? record.text
@@ -222,7 +226,12 @@ export function adaptSession(session: SessionJson): AdapterResult {
         ...(usage ? { usage } : {}),
         ...(provenance ? { provenance } : {}),
         ...(record.requestConfig ? { requestConfig: record.requestConfig } : {}),
-        timing: { stepStartTime, firstTokenTime, completedTime },
+        timing: {
+          stepStartTime,
+          firstTokenTime,
+          completedTime,
+          ...(reasoningUnstreamed ? { reasoningUnstreamed: true } : {}),
+        },
       }
       nodes.push(node)
 

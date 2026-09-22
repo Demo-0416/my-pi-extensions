@@ -329,7 +329,12 @@ function throughput(metrics: AssistantMetricDetail): string {
   if (metrics.completedTime === null) return 'Pending'
   if (metrics.stepStartTime === null || !Number.isFinite(metrics.stepStartTime)
     || metrics.firstTokenTime < metrics.stepStartTime) return 'Timing unavailable'
-  const rate = outputTokensPerSecond(metrics.outputTokens, metrics.completedTime - metrics.firstTokenTime)
+  // reasoning 未随流式增量下发（thinking 正文为空）时，firstToken→completed 窗口
+  // 不含推理生成时间而 output 含推理 token —— 改用整段窗口（同 stats.ts decodeMsOf）。
+  const window = metrics.reasoningUnstreamed === true
+    ? metrics.completedTime - metrics.stepStartTime
+    : metrics.completedTime - metrics.firstTokenTime
+  const rate = outputTokensPerSecond(metrics.outputTokens, window)
   return rate === null ? 'Insufficient timing or usage' : `${rate.toFixed(1)} tok/s`
 }
 

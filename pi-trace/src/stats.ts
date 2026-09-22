@@ -23,6 +23,13 @@ export interface TraceStats {
    * 输出速率 tok/s。分子分母必须来自**同一批** assistant 记录：
    * Σ output / Σ decodeMs，只统计「既有解码时长、又有 output token」的记录。
    * 无合格样本为 null。
+   *
+   * 2026-09-22 修正：部分网关（如 model_hub/es1_orange_o50）的 reasoning token
+   * 计入 usage.output，但推理过程**不随流式增量下发**（message 里 thinking 正文
+   * 为空、只有签名）。此时 ttft 到 message_end 的窗口只覆盖可见文本的生成时间，
+   * 而分子却包含推理 token —— durationMs − ttftMs 作分母会让速率虚高 3-6 倍
+   * （实测 408 tok/s vs 端到端 65 tok/s）。凡 reasoning > 0 且 thinking 正文
+   * 为空的记录，退回整段 durationMs（端到端口径），见 decodeMsOf。
    */
   tokPerSec: number | null;
   /** tokPerSec 的样本数（合格 assistant 记录数），0 表示该指标不可得。 */
@@ -70,10 +77,17 @@ export function outputTokensPerSecond(output: number | null | undefined, duratio
  * - reconstructed（无 TTFT）：整段 durationMs（含排队/首包，速率偏保守）
  * 时长缺失（请求进行中、或历史文件里拿不到完成时间）返回 null —— 该记录
  * 既不贡献时间，它的 token 也不能进分子。
+ *
+ * 例外（reasoning 未随流下发的网关）：usage.reasoning > 0 但 thinking 正文
+ * 为空时，推理生成发生在服务端、不产生任何流式增量，ttft 标记的是推理结束后
+ * 第一个可见 token 的时刻。此时 decode 窗口（durationMs − ttftMs）根本不包含
+ * 推理时间，而分子的 output 包含推理 token —— 扣减 ttft 会得到虚高速率。
+ * 这类记录退回整段 durationMs，让分子分母都覆盖完整生成过程。
  */
 function decodeMsOf(record: TraceRecord): number | null {
   if (!validNonNegative(record.durationMs)) return null;
-  if (record.ttftMs !== null && record.ttftMs !== undefined) {
+  const reasoningUnstreamed = (record.usage?.reasoning ?? 0) > 0 && !record.thinking;
+  if (!reasoningUnstreamed && record.ttftMs !== null && record.ttftMs !== undefined) {
     if (!validNonNegative(record.ttftMs) || record.ttftMs > record.durationMs) return null;
     return record.durationMs - record.ttftMs;
   }

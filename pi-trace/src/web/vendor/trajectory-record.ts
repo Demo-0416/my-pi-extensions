@@ -21,6 +21,12 @@ export interface AssistantMetricDetail {
   completedTime: number | null
   usageProvided: boolean
   outputTokens: number | null
+  /**
+   * reasoning token 未随流式增量下发（thinking 正文为空）时为 true：
+   * firstTokenTime→completedTime 窗口不含推理生成时间，吞吐必须改用
+   * stepStartTime→completedTime 整段窗口，否则速率虚高（同 stats.ts decodeMsOf）。
+   */
+  reasoningUnstreamed?: boolean
 }
 
 /** One source content block preserved in model order for the details panel. */

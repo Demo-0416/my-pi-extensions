@@ -501,7 +501,7 @@ Turn 3
 - `output` 为正有限数，且请求未失败或中断（不完整 usage 不用于速率）
 - 记录 kind 为 assistant —— 工具自带的 `usage`（subagent 等嵌套 LLM 调用）计入 `outputTokens` 与费用，但单列 `nestedOutputTokens`，**绝不进速率分子**
 
-有 TTFT 时，`decodeMs = durationMs − ttftMs`；无 TTFT 时使用完整请求时长，得到包含等待时间的平均速率，不能与纯解码速率直接比较。无合格样本时 `tokPerSec = null`，统计栏省略 TPS；`tokPerSecSamples` 提供样本数。工具文本不用于估算 output token，工具嵌套 usage 单独计入总量。
+有 TTFT 时，`decodeMs = durationMs − ttftMs`；无 TTFT 时使用完整请求时长，得到包含等待时间的平均速率，不能与纯解码速率直接比较。**例外**：`usage.reasoning > 0` 但 thinking 正文为空（如 model_hub/es1_orange_o50，推理只在服务端进行、不随流式增量下发）时，ttft 到 message_end 的窗口不包含推理生成时间，而 output 含推理 token，扣减 ttft 会使速率虚高数倍（实测 408 vs 端到端 65 tok/s）。这类记录退回整段 `durationMs`，与 reconstructed 口径一致。无合格样本时 `tokPerSec = null`，统计栏省略 TPS；`tokPerSecSamples` 提供样本数。工具文本不用于估算 output token，工具嵌套 usage 单独计入总量。
 
 ### 3.7 历史会话回放（session-loader.ts）
 

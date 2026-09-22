@@ -44165,7 +44165,8 @@ function outputTokensPerSecond(output, durationMs) {
 }
 function decodeMsOf(record) {
   if (!validNonNegative(record.durationMs)) return null;
-  if (record.ttftMs !== null && record.ttftMs !== void 0) {
+  const reasoningUnstreamed = (record.usage?.reasoning ?? 0) > 0 && !record.thinking;
+  if (!reasoningUnstreamed && record.ttftMs !== null && record.ttftMs !== void 0) {
     if (!validNonNegative(record.ttftMs) || record.ttftMs > record.durationMs) return null;
     return record.durationMs - record.ttftMs;
   }
@@ -44442,7 +44443,8 @@ function throughput(metrics) {
   if (!metrics.timingRecorded || metrics.firstTokenTime === null) return "First token unavailable";
   if (metrics.completedTime === null) return "Pending";
   if (metrics.stepStartTime === null || !Number.isFinite(metrics.stepStartTime) || metrics.firstTokenTime < metrics.stepStartTime) return "Timing unavailable";
-  const rate = outputTokensPerSecond(metrics.outputTokens, metrics.completedTime - metrics.firstTokenTime);
+  const window2 = metrics.reasoningUnstreamed === true ? metrics.completedTime - metrics.stepStartTime : metrics.completedTime - metrics.firstTokenTime;
+  const rate = outputTokensPerSecond(metrics.outputTokens, window2);
   return rate === null ? "Insufficient timing or usage" : `${rate.toFixed(1)} tok/s`;
 }
 function AssistantTimingPanel({ metrics }) {
@@ -47964,7 +47966,10 @@ function expandAssistant(node2, startIndex, prevAbsTime, results, callStarts, ca
     firstTokenTime: node2.timing?.firstTokenTime ?? null,
     completedTime: streaming ? null : finiteTime(node2.time),
     usageProvided: usage !== void 0,
-    outputTokens: Number.isFinite(usage?.outputTokens) ? usage?.outputTokens ?? null : null
+    outputTokens: Number.isFinite(usage?.outputTokens) ? usage?.outputTokens ?? null : null,
+    // reasoning 未随流式下发时（adapter 标记），吞吐窗口须用整段时长，
+    // 否则分子含推理 token、分母只有可见文本生成时间，速率虚高（同 stats.ts）。
+    ...node2.timing?.reasoningUnstreamed === true ? { reasoningUnstreamed: true } : {}
   };
   out.push({ absTime: nodeAbs, cell: message });
   for (const block of node2.blocks) {
@@ -48490,6 +48495,7 @@ function adaptSession(session) {
       const stepStartTime = hasDuration ? record.startedAt : null;
       const firstTokenTime = hasDuration && !record.isError && record.ttftMs !== null && record.ttftMs !== void 0 && Number.isFinite(record.ttftMs) && record.ttftMs >= 0 && record.ttftMs <= record.durationMs ? record.startedAt + record.ttftMs : null;
       const completedTime = completed && hasDuration ? record.startedAt + record.durationMs : record.startedAt;
+      const reasoningUnstreamed = (record.usage?.reasoning ?? 0) > 0 && !record.thinking;
       const blocks = [];
       const text6 = record.fullText ?? record.text;
       if (text6) blocks.push({ kind: "text", text: text6 });
@@ -48517,7 +48523,12 @@ function adaptSession(session) {
         ...usage ? { usage } : {},
         ...provenance ? { provenance } : {},
         ...record.requestConfig ? { requestConfig: record.requestConfig } : {},
-        timing: { stepStartTime, firstTokenTime, completedTime }
+        timing: {
+          stepStartTime,
+          firstTokenTime,
+          completedTime,
+          ...reasoningUnstreamed ? { reasoningUnstreamed: true } : {}
+        }
       };
       nodes.push(node2);
       const request = {

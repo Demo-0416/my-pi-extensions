@@ -94,6 +94,28 @@ test('TTFT is subtracted only when valid; rates are weighted by generation time'
   assert.equal(computeStats(session([record({ durationMs: 5000, ttftMs: 5000 })])).tokPerSec, null);
 });
 
+test('reasoning tokens that never streamed as deltas fall back to full duration (no TTFT subtraction)', () => {
+  // 网关不把推理过程作为流式增量下发（thinking 正文为空、只有签名）时，
+  // ttft 标记的是推理结束后第一个可见 token，decode 窗口不含推理时间，
+  // 但 usage.output 含推理 token —— 扣 ttft 会虚高（5000/1s = 5000 tok/s），
+  // 必须退回整段时长（5000/40s = 125 tok/s 端到端，与 reconstructed 口径一致）。
+  const buffered = computeStats(session([
+    record({ durationMs: 40_000, ttftMs: 39_000, usage: { ...usage(5000), reasoning: 4500 } }),
+  ]));
+  assert.equal(buffered.tokPerSec, 125);
+  assert.equal(buffered.tokPerSecSamples, 1);
+  // 推理随流下发的网关（thinking 正文非空）不受影响：正常扣 ttft 得纯解码速率。
+  const streamed = computeStats(session([
+    record({ durationMs: 40_000, ttftMs: 39_000, thinking: '推理正文', usage: { ...usage(5000), reasoning: 4500 } }),
+  ]));
+  assert.equal(streamed.tokPerSec, 5000);
+  // 无 reasoning 的普通记录同样不受影响。
+  const plain = computeStats(session([
+    record({ durationMs: 40_000, ttftMs: 39_000, usage: usage(5000) }),
+  ]));
+  assert.equal(plain.tokPerSec, 5000);
+});
+
 test('the shared per-request guard rejects invalid and sub-50ms samples without capping valid rates', () => {
   for (const duration of [null, 0, 1, 49, -1, NaN, Infinity]) {
     assert.equal(outputTokensPerSecond(200, duration), null);

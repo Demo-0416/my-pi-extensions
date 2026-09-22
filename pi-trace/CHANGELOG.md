@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.3
+
+- Fix inflated TPS on gateways that do not stream reasoning deltas (e.g. `model_hub/es1_orange_o50`). `usage.output` includes reasoning tokens, but the TTFT-to-end window only covers visible-text generation when thinking never arrives as stream deltas; those records now fall back to the full request duration, matching the reconstructed-session rate (measured 408 tok/s → 65 tok/s end-to-end).
+
 ## 0.1.2
 
 - Pair output tokens and generation time from the same eligible assistant records when calculating TPS. Tool output and nested tool usage cannot inflate the model's rate.
