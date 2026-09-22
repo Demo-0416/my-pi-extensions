@@ -8,8 +8,12 @@
  *     glance 行叫 "Grep"。统一为 Search。
  *  3. §5:577 — 展开分组后 pending 成员的状态点没有前景色，比其他 pending 点亮
  *     一档。统一走 theme.fg("dim", ⏺)。
- *  4. §5 commands.ts:180 — ctrl+shift+o 在非 Kitty 协议终端收不到；注册 alt+o
- *     （ESC 前缀、处处可解码）作为同一开关的降级键。
+ *  4. §5 commands.ts:180 — ctrl+shift+o 在非 Kitty 协议终端收不到；曾注册 alt+o
+ *     作为降级键。2026-09-22 对齐 claude-code-main 时移除两个快捷键：CC 的
+ *     verbose 只在 /config 面板切换、无键盘绑定（ctrl+shift+o 在 CC 是
+ *     app:toggleTeammatePreview）；持久化开关 + 单修饰键和弦 + 无状态指示
+ *     导致误触后默默刷几千行。extra detail 现在只能 /cc-tools detail 切换，
+ *     开启时状态栏显示 detail 段（见 status-line-detail-indicator.test.ts）。
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -120,10 +124,13 @@ test("展开 glance 行：grep 叫 Search（与独立行一致），pending 点�
 	assert.ok(dimmedDot, `pending 状态点应经 theme.fg("dim", ${BLACK_CIRCLE})，实际 fg 调用: ${JSON.stringify(theme.fgCalls.slice(0, 20))}`);
 });
 
-test("alt+o 注册为 extra-detail 的非 Kitty 降级键，与 ctrl+shift+o 同效", async () => {
+test("extra-detail 无键盘快捷键（对齐 CC verbose 只能在 /config 切换），只能 /cc-tools 切换", async () => {
 	const pi = await loadExtension();
-	assert.ok(pi.shortcuts.has("ctrl+shift+o"), "ctrl+shift+o 已注册");
-	assert.ok(pi.shortcuts.has("alt+o"), "alt+o 降级键已注册");
+	// 对齐 claude-code-main：verbose 没有键盘绑定（ctrl+shift+o 在 CC 是
+	// app:toggleTeammatePreview）。误触持久化的 extra-detail 会刷几千行，
+	// 两个快捷键都必须不存在。
+	assert.ok(!pi.shortcuts.has("ctrl+shift+o"), "ctrl+shift+o 不应再注册");
+	assert.ok(!pi.shortcuts.has("alt+o"), "alt+o 不应再注册");
 
 	// setDetail 持久化到 homedir()/.pi/settings.json——重定向 HOME 免污染。
 	const { mkdtempSync } = await import("node:fs");
@@ -135,10 +142,11 @@ test("alt+o 注册为 extra-detail 的非 Kitty 降级键，与 ctrl+shift+o 同
 	try {
 		const commands = await import("../extension/commands.js");
 		const before = commands.isExtraDetail();
-		await pi.shortcuts.get("alt+o").handler({ hasUI: false });
-		assert.equal(commands.isExtraDetail(), !before, "alt+o 应翻转 extra-detail 开关");
-		await pi.shortcuts.get("ctrl+shift+o").handler({ hasUI: false });
-		assert.equal(commands.isExtraDetail(), before, "ctrl+shift+o 应再翻转回来（同一开关）");
+		const handler = pi.commands.get("cc-tools")!.handler;
+		await handler("detail", { hasUI: false } as any);
+		assert.equal(commands.isExtraDetail(), !before, "/cc-tools detail 应翻转 extra-detail 开关");
+		await handler("detail", { hasUI: false } as any);
+		assert.equal(commands.isExtraDetail(), before, "再切一次应翻转回来");
 	} finally {
 		process.env.HOME = origHome;
 	}

@@ -8,6 +8,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { homedir } from "node:os";
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { isExtraDetail } from "./commands.js";
 
 /**
  * Collapse the home-dir prefix of an absolute path to `~`, CC-style
@@ -119,6 +120,12 @@ export function registerStatusLine(pi: ExtensionAPI): void {
 						const total = formatDuration(Date.now() - sessionStartMs);
 						parts.push(theme.fg("dim", `${total} · ${turns} ${turns === 1 ? "turn" : "turns"}`));
 					}
+					// extra detail（≈CC verbose）是持久化开关，误开后每屏可能刷上千行，
+					// 必须在状态栏可见——否则用户无从得知刷屏来源（2026-09-22 事故）。
+					// CC 状态栏本身没有 verbose 段（已核实 StatusLine.tsx），这段是超出 CC
+					// 的自有元素：只用 dim Mode 指示，不占 warning——warning 保留给上下文
+					// 将尽这类真正需要动作的状态，模式开启不是告警。
+					if (isExtraDetail()) parts.push(theme.fg("dim", "detail"));
 
 					const line = parts.join(theme.fg("dim", " · "));
 					return [truncateToWidth(line, width, "")];

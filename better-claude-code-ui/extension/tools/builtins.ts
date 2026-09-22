@@ -95,7 +95,11 @@ const MAX_DIFF_FILE_BYTES = 1_048_576; // 1 MiB
 // not accumulate one old-file copy per toolCallId forever (AUDIT §5:670).
 const MAX_WRITE_SNAPSHOTS = 64;
 
-const PREVIEW_LINES = 8;
+// CC utils/terminal.ts:7 — MAX_LINES_TO_SHOW = 3（2026-09 核实 claude-code-main，
+// 旧快照的 8 行已改为 3 行视觉行）。折叠态预览预算按视觉行算，head-first。
+const PREVIEW_LINES = 3;
+// extra detail ≈ CC 的 verbose：不截断（CC OutputLine shouldShowFull 走全文，
+// 仅受 pi 自身的 2000 行/50KB 工具层截断约束）。
 const EXTRA_DETAIL_LINES = 12000;
 
 // CC ShellProgressMessage.tsx:44,83 — the streaming preview is a fixed 5-row
@@ -907,7 +911,11 @@ export function registerBuiltins(pi: ExtensionAPI): void {
 			// tailing is the point while output is still arriving. Only the completed
 			// view flips to head-first.
 			if (isPartial) {
-				const collected = collectNonEmptyLines(output, STREAM_PREVIEW_ROWS);
+				// CC ShellProgressMessage.tsx:44 — verbose 时流式也走全文
+				// （strippedFullOutput），非 verbose 才是 5 行尾窗。extra detail 对齐
+				// 该行为（head-first 全文），但保留 MAX_RENDER_LINES 视觉行上限防
+				// minified 行炸屏。
+				const collected = extraDetail ? collectNonEmptyLines(output) : collectNonEmptyLines(output, STREAM_PREVIEW_ROWS);
 				setLiveLineCount(c, collected.total);
 				if (collected.total === 0) {
 					return cachedText(c.lastComponent, withResultLead(theme, theme.fg("dim", "Running…")));
@@ -915,8 +923,14 @@ export function registerBuiltins(pi: ExtensionAPI): void {
 				// Budget the tail in VISUAL rows too: 5 logical lines of minified output
 				// is still hundreds of rows. Built at render time — the row budget needs
 				// the width.
-				const key = `stream\u0000${collected.total}\u0000${collected.lines.join("\n")}`;
+				const key = `stream\u0000${extraDetail}\u0000${collected.total}\u0000${collected.lines.join("\n")}`;
 				return widthBudgetedBody(c.lastComponent, theme, key, (contentWidth) => {
+					if (extraDetail) {
+						const body = renderTruncatedContent(collected.lines.join("\n"), contentWidth, MAX_RENDER_LINES, theme, (l) => theme.fg("dim", l), {
+							expandHint: false,
+						});
+						return `${theme.fg("dim", "Running…")}\n${body}`;
+					}
 					const tail = tailVisualRows(collected.lines, contentWidth, STREAM_PREVIEW_ROWS, (l) => theme.fg("dim", l));
 					return `${theme.fg("dim", "Running…")}\n${tail}`;
 				});

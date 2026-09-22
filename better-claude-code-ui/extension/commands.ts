@@ -1,6 +1,7 @@
 /**
  * Commands: /cc-tools, /cc-theme, /cc-spinner (same names as the old extension
- * to keep migration cost zero), plus Ctrl+Shift+O extra-detail toggle.
+ * to keep migration cost zero). Extra detail 对齐 CC：无键盘快捷键（CC 只在
+ * /config 面板切 verbose），只能 /cc-tools detail 切换，开启时状态栏显示 detail。
  *
  * The group and extra-detail toggles persist to ~/.pi/settings.json (old ext
  * writeSettingsKey pattern) so they survive restarts; grouping.ts reads
@@ -137,7 +138,7 @@ export function registerCommands(pi: ExtensionAPI): void {
 					ctx.ui.notify(
 						[
 							`Tool grouping: ${groupingEnabled ? "on" : "off"}`,
-							`Extra detail: ${extraDetail ? "on" : "off"} (ctrl+shift+o, or alt+o on legacy terminals)`,
+							`Extra detail: ${extraDetail ? "on" : "off"} (/cc-tools detail on|off|toggle)`,
 							"  /cc-tools group on|off|toggle",
 							"  /cc-tools detail on|off|toggle",
 						].join("\n"),
@@ -225,21 +226,11 @@ export function registerCommands(pi: ExtensionAPI): void {
 		},
 	});
 
-	// Ctrl+Shift+O — toggle extra detail (preview line cap 8 → 12000).
-	// AUDIT §5 commands.ts:180 — ctrl+shift+o only exists as a distinct key under
-	// the Kitty keyboard protocol; legacy terminals send plain ^O for it, which pi
-	// consumes as its built-in Ctrl+O expand. Register alt+o (ESC-prefixed, decodable
-	// everywhere) as a fallback binding for the same toggle.
-	const detailToggle = async (ctx: Parameters<Parameters<typeof pi.registerShortcut>[1]["handler"]>[0]) => {
-		setDetail(!extraDetail);
-		if (ctx.hasUI) ctx.ui.notify(`Extra detail: ${extraDetail ? "on" : "off"}`, "info");
-	};
-	pi.registerShortcut("ctrl+shift+o", {
-		description: "Toggle CC tool extra-detail mode",
-		handler: detailToggle,
-	});
-	pi.registerShortcut("alt+o", {
-		description: "Toggle CC tool extra-detail mode (fallback for terminals without the Kitty keyboard protocol)",
-		handler: detailToggle,
-	});
+	// CC 没有 verbose 的键盘快捷键 —— claude-code-main 里 verbose 只能在 /config
+	// 面板切换（ctrl+shift+o 是 app:toggleTeammatePreview，与 verbose 无关）。
+	// 我们曾经把 extra detail 绑到 ctrl+shift+o 和 alt+o：单修饰键和弦在终端里
+	// 极易误触（macOS Option 即 ESC 前缀），而开关是持久化的、状态栏又无指示，
+	// 误触一次就默默刷几千行（2026-09-22 刷屏事故）。对齐 CC：只保留
+	// /cc-tools 命令切换；持久化保留（CC 也持久化 verbose 到 global config），
+	// 但开启时状态栏必须有指示（status-line.ts 的 detail 段）。
 }
